@@ -1,0 +1,17 @@
+[package]
+name = "aevan-ift"
+description = "IF-T/TLS (Pulse) transport for aevan; optional research track (M6)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+default = []
+ift = []
+
+[dependencies]
+aevan-core = { workspace = true }

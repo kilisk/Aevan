@@ -1,0 +1,56 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.2.0"
+edition = "2021"
+rust-version = "1.99"
+license = "MIT OR Apache-2.0"
+authors = ["aevan contributors"]
+keywords = ["vpn", "ivanti", "pulse", "network-connect"]
+categories = ["command-line-utilities", "network-programming"]
+
+[workspace.dependencies]
+aes = "0.8"
+cbc = "0.1"
+cipher = "0.4"
+clap = { version = "4.5", features = ["derive"] }
+hmac = "0.12"
+iced = { version = "0.13", default-features = false, features = ["wgpu", "tokio"] }
+md-5 = "0.10"
+aevan-core = { path = "crates/aevan-core" }
+aevan-daemon = { path = "crates/aevan-daemon" }
+aevan-nc = { path = "crates/aevan-nc" }
+aevan-proto = { path = "crates/aevan-proto" }
+aevan-secrets = { path = "crates/aevan-secrets" }
+aevan-tun = { path = "crates/aevan-tun" }
+keyring = { version = "3", default-features = false }
+libc = "0.2"
+notify-rust = "4.18"
+png = "0.18"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha1 = "0.10"
+tao = { version = "0.37", default-features = false }
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "io-util", "sync"] }
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tray-icon = { version = "0.26", default-features = false }
+webpki-roots = "1"
+x509-parser = "0.16"
+rpassword = "7"
+winresource = "0.1"
+zeroize = { version = "1.8", features = ["derive"] }
+
+[profile.dev]
+debug = 0
+codegen-units = 16
+
+[profile.release]
+lto = "thin"
+codegen-units = 16
+strip = true

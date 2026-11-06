@@ -1,0 +1,10 @@
+aevan is dual-licensed under either of
+
+  * Apache License, Version 2.0 (see LICENSE-APACHE), or
+  * MIT license (see LICENSE-MIT)
+
+at your option.
+
+The Windows binary distribution also contains wintun.dll from WireGuard LLC.
+It is distributed unmodified alongside aevan, which uses only the Permitted API
+described by its license. See packaging/legal/LICENSE-WINTUN.txt.

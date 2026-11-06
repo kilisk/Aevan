@@ -1,0 +1,16 @@
+# Historical cargo-dist axes recorded at M0. The M5 artifacts are built by the
+# justfile (WiX Toolset v7 for the Windows MSI) and uploaded by ci.yml; this
+# file is not the active packaging pipeline.
+
+[dist]
+cargo-dist-version = "0.28.4"
+ci = "github"
+installers = ["shell", "powershell", "msi"]
+pr-run-mode = "plan"
+targets = [
+  "aarch64-apple-darwin",
+  "x86_64-apple-darwin",
+  "x86_64-pc-windows-msvc",
+  "x86_64-unknown-linux-gnu",
+  "x86_64-unknown-linux-musl",
+]

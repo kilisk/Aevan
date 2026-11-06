@@ -1,0 +1,19 @@
+[Unit]
+Description=aevan tunnel daemon
+Documentation=https://github.com/kilisk/aevan
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/aevand
+Restart=on-failure
+RestartSec=2
+# aevand creates /dev/net/tun and changes routes and DNS, so it must run as
+# root. Profiles live in root's home, not the desktop user's; this unit is an
+# opt-in for a machine with a single operator. Use `aevan`/`aevan-gui` as that
+# user or point AEVAN_CONFIG_DIR at the same store.
+Environment=HOME=/root
+
+[Install]
+WantedBy=multi-user.target

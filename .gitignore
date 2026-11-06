@@ -1,0 +1,13 @@
+/target
+**/target
+Cargo.lock.orig
+*.pdb
+*.bundle
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.log
+
+# live gateway dumps (session-derived, never commit)
+/dump/

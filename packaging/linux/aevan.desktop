@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Aevan
+GenericName=Ivanti Secure Access client
+Comment=Connect through an Ivanti Secure Access gateway
+Exec=aevan-gui
+Icon=aevan
+Terminal=false
+Categories=Network;

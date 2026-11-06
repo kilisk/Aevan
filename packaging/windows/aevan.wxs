@@ -1,0 +1,217 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Per-machine MSI for Aevan (the product name); the binaries are aevan/aevand/aevan-gui.
+
+  Trust model: profiles and the crash journal live in the user's
+  %APPDATA%\aevan, so this package does not install a LocalSystem service.
+  Autostart is an opt-in per-user scheduled task registered by aevand for the
+  installing user's SID. See docs/INSTALL.md.
+
+  Build (WiX v7):
+    wix build -arch x64 -d Version=0.2.0 -d BinDir=target/release \
+      -d IconPath=assets/branding/Aevan-1024.ico \
+      -d LicensePath=LICENSE -d MitLicensePath=LICENSE-MIT \
+      -d ApacheLicensePath=LICENSE-APACHE \
+      -d WintunLicensePath=packaging/legal/LICENSE-WINTUN.txt \
+      -o target/dist/aevan-0.2.0-x64.msi packaging/windows/aevan.wxs
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+    Name="Aevan"
+    Manufacturer="aevan contributors"
+    Version="$(var.Version)"
+    Language="1033"
+    UpgradeCode="97E628B1-458E-43F7-9722-DD29F9C222FE"
+    ProductCode="*"
+    Scope="perMachine"
+    Compressed="yes"
+    InstallerVersion="500">
+
+    <!-- Add/Remove Programs icon. The same artwork is installed as aevan.ico. -->
+    <Icon Id="AevanIcon" SourceFile="$(var.IconPath)" />
+    <Property Id="ARPPRODUCTICON" Value="AevanIcon" />
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Aevan is already installed. Uninstall it before installing $(var.Version)." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <!--
+      Start at login is on by default so a fresh install leaves a working
+      per-user logon task. Pass INSTALL_AUTOSTART=0 to opt out.
+    -->
+    <Property Id="INSTALL_AUTOSTART" Value="1" />
+
+    <Feature Id="MainFeature" Title="Aevan" Level="1">
+      <ComponentGroupRef Id="AppComponents" />
+      <ComponentGroupRef Id="IntegrationComponents" />
+    </Feature>
+
+    <!--
+      Sequence:
+      - immediate SetProperty actions capture the installing user's SID (or
+        DOMAIN\user) for the deferred task action;
+      - install creates the task after InstallFiles, with a rollback action;
+      - uninstall stops the invoking user's daemon and recovers a stale
+        journal before RemoveFiles, then deletes the task.
+      Repair (REINSTALL) matches none of these conditions.
+    -->
+    <InstallExecuteSequence>
+      <Custom Action="SetAevanTaskUserSid" Sequence="4050"
+              Condition="INSTALL_AUTOSTART = 1 AND NOT Installed" />
+      <Custom Action="SetAevanTaskUserLogon" Sequence="4060"
+              Condition="INSTALL_AUTOSTART = 1 AND NOT Installed AND NOT UserSID" />
+      <Custom Action="SetAevanTaskUserName" Sequence="4070"
+              Condition="INSTALL_AUTOSTART = 1 AND NOT Installed AND NOT UserSID AND NOT LogonUser" />
+
+      <Custom Action="RollbackAutostart" Sequence="4100"
+              Condition="INSTALL_AUTOSTART = 1 AND NOT Installed" />
+      <Custom Action="InstallAutostart" Sequence="4110"
+              Condition="INSTALL_AUTOSTART = 1 AND NOT Installed" />
+
+      <Custom Action="ShutdownDaemon" Sequence="3400"
+              Condition="REMOVE = &quot;ALL&quot;" />
+      <Custom Action="RecoverJournal" Sequence="3410"
+              Condition="REMOVE = &quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+      <Custom Action="RemoveAutostart" Sequence="3420"
+              Condition="REMOVE = &quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+    </InstallExecuteSequence>
+  </Package>
+
+  <Fragment>
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="Aevan" />
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="AevanMenuFolder" Name="Aevan" />
+    </StandardDirectory>
+
+    <ComponentGroup Id="AppComponents" Directory="INSTALLFOLDER">
+      <Component Id="AevanExe" Guid="20A096FC-2768-486F-AED7-29BEAC63FA28">
+        <File Id="AevanExeFile" Source="$(var.BinDir)\aevan.exe" KeyPath="yes" />
+      </Component>
+
+      <Component Id="AevandExe" Guid="7B8CBE3E-B6E2-448E-A2E6-6127B5D107ED">
+        <File Id="AevandExeFile" Source="$(var.BinDir)\aevand.exe" KeyPath="yes" />
+      </Component>
+
+      <Component Id="AevanGuiExe" Guid="734CB07E-8FE8-44C3-8977-DCEC3E52FC87">
+        <File Id="AevanGuiExeFile" Source="$(var.BinDir)\aevan-gui.exe" KeyPath="yes" />
+      </Component>
+
+      <Component Id="WintunDll" Guid="E63F3D22-B6F1-468D-865E-613F2F1D6284">
+        <File Id="WintunDllFile" Source="$(var.BinDir)\wintun.dll" KeyPath="yes" />
+      </Component>
+
+      <!-- The installed copy of the icon shown in Add/Remove Programs. -->
+      <Component Id="AevanIconComponent" Guid="0DC13998-89A7-4585-9280-57EFAE4C9669">
+        <File Id="AevanIconFile" Source="$(var.IconPath)" Name="aevan.ico" KeyPath="yes" />
+      </Component>
+
+      <Component Id="LicenseFile" Guid="E36DE3FC-6506-498C-BD83-7B72E2221525">
+        <File Id="LicensePayload" Source="$(var.LicensePath)" KeyPath="yes" />
+      </Component>
+
+      <Component Id="MitLicenseFile" Guid="5C691B8E-FEB9-49F5-B112-67FA4437C3B5">
+        <File Id="MitLicensePayload" Source="$(var.MitLicensePath)" KeyPath="yes" />
+      </Component>
+
+      <Component Id="ApacheLicenseFile" Guid="D779DC7D-4E18-446A-BCE7-061C4AA76FE6">
+        <File Id="ApacheLicensePayload" Source="$(var.ApacheLicensePath)" KeyPath="yes" />
+      </Component>
+
+      <Component Id="WintunLicenseFile" Guid="4EFB728C-1FB5-4DC6-8B08-D314203863EB">
+        <File Id="WintunLicensePayload" Source="$(var.WintunLicensePath)" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <ComponentGroup Id="IntegrationComponents" Directory="INSTALLFOLDER">
+      <!-- Adds the install directory to the machine PATH and removes it on uninstall. -->
+      <Component Id="PathComponent" Guid="85D24A02-AB95-4903-9FDA-905571CEAB09">
+        <RegistryValue Root="HKLM" Key="Software\aevan" Name="InstallDir"
+                       Type="string" Value="[INSTALLFOLDER]" KeyPath="yes" />
+        <Environment Id="PathEntry" Name="PATH" Value="[INSTALLFOLDER]"
+                     Permanent="no" Part="last" Action="set" System="yes" />
+      </Component>
+
+      <!--
+        The Start menu shortcut is per-user even in a per-machine package.
+        HKCU is its keypath and RemoveFolder removes the menu folder on
+        uninstall, so Windows Installer can track it without mixing per-user
+        and per-machine state in one component.
+      -->
+      <Component Id="AevanGuiShortcut" Guid="615463E0-988E-48FA-8488-3BAEA11FB663">
+        <Shortcut Id="AevanGuiStartMenuShortcut"
+                  Directory="AevanMenuFolder"
+                  Name="Aevan"
+                  Description="Aevan — Ivanti Secure Access client"
+                  Target="[INSTALLFOLDER]aevan.exe"
+                  Icon="AevanIcon"
+                  WorkingDirectory="INSTALLFOLDER" />
+        <RegistryValue Root="HKCU" Key="Software\aevan" Name="StartMenuShortcut"
+                       Type="integer" Value="1" KeyPath="yes" />
+        <RemoveFolder Id="AevanMenuFolder" Directory="AevanMenuFolder" On="uninstall" />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+
+  <Fragment>
+    <!--
+      The immediate SetProperty below also stages the deferred action's
+      CustomActionData. The type 18 command line is formatted at scheduling
+      time, and this makes the same value available to deferred execution.
+    -->
+    <SetProperty Id="InstallAutostart"
+                 Value="--install-autostart --user &quot;[AEVAN_TASK_USER]&quot;"
+                 Before="InstallAutostart"
+                 Sequence="execute"
+                 Condition="INSTALL_AUTOSTART = 1 AND NOT Installed" />
+
+    <CustomAction Id="SetAevanTaskUserSid"
+                  Property="AEVAN_TASK_USER"
+                  Value="[UserSID]"
+                  Execute="immediate" />
+    <CustomAction Id="SetAevanTaskUserLogon"
+                  Property="AEVAN_TASK_USER"
+                  Value="[LogonUser]"
+                  Execute="immediate" />
+    <CustomAction Id="SetAevanTaskUserName"
+                  Property="AEVAN_TASK_USER"
+                  Value="[USERDOMAIN]\[USERNAME]"
+                  Execute="immediate" />
+
+    <CustomAction Id="InstallAutostart"
+                  FileRef="AevandExeFile"
+                  ExeCommand="--install-autostart --user &quot;[AEVAN_TASK_USER]&quot;"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="check" />
+
+    <CustomAction Id="RollbackAutostart"
+                  FileRef="AevandExeFile"
+                  ExeCommand="--remove-autostart"
+                  Execute="rollback"
+                  Impersonate="no"
+                  Return="ignore" />
+
+    <CustomAction Id="ShutdownDaemon"
+                  FileRef="AevanExeFile"
+                  ExeCommand="shutdown --if-running"
+                  Execute="deferred"
+                  Impersonate="yes"
+                  Return="check" />
+
+    <CustomAction Id="RecoverJournal"
+                  FileRef="AevandExeFile"
+                  ExeCommand="--recover"
+                  Execute="deferred"
+                  Impersonate="yes"
+                  Return="check" />
+
+    <CustomAction Id="RemoveAutostart"
+                  FileRef="AevandExeFile"
+                  ExeCommand="--remove-autostart"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="check" />
+  </Fragment>
+</Wix>

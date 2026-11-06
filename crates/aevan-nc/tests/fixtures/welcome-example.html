@@ -1,0 +1,19 @@
+<!--
+  SYNTHETIC FIXTURE — not a recorded capture.
+
+  This page models the redirect chain a Network Connect gateway can serve: a
+  portal path redirects to a per-realm welcome page whose login form declares
+  the relative action "login.cgi". Every value here is invented for the offline
+  tests; it is not copied from any real gateway response.
+
+  The per-realm path segment changes between gateways, so the action is the
+  relative "login.cgi" the page declares; resolving it against the final
+  welcome URL is the code's job, and the test asserts that.
+-->
+<form class="signin-right-form-container_example" id="signin-left-container_example" name="frmLogin" action="login.cgi" method="POST" autocomplete="off" onsubmit="return Login(0)">
+  <input name="tz_offset" type="hidden" value="">
+  <input name="clientMAC" type="hidden" value="">
+  <input name="username" type="text" value="" autocomplete="off">
+  <input name="password" type="password" value="" autocomplete="off">
+  <input name="realm" type="hidden" value="example_realm">
+</form>

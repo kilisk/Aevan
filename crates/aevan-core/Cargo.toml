@@ -1,0 +1,16 @@
+[package]
+name = "aevan-core"
+description = "Profiles, state machine, error taxonomy and logging helpers for aevan"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+toml = { workspace = true }
+zeroize = { workspace = true }

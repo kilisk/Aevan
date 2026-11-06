@@ -1,0 +1,28 @@
+[package]
+name = "aevan-nc"
+description = "Network Connect transport for aevan (M2; stub at M0)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+aes = { workspace = true }
+cbc = { workspace = true }
+cipher = { workspace = true }
+hmac = { workspace = true }
+aevan-core = { workspace = true }
+aevan-proto = { workspace = true }
+md-5 = { workspace = true }
+serde = { workspace = true }
+sha1 = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+zeroize = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+tracing-subscriber = { workspace = true }

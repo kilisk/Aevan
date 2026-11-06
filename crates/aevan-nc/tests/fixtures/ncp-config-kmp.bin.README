@@ -1,0 +1,20 @@
+# SYNTHETIC FIXTURE — ncp-config-kmp.bin
+
+This is a synthetic binary oNCP/KMP message built for the offline tests. It is
+not a captured gateway response. The addresses `10.20.0.x` are documentation
+placeholders, not a real network: internal IP `10.20.0.10/32`, gateway
+`10.20.0.1`, split routes `10.0.0.0/8`, `172.30.0.0/21`, `172.30.8.0/24`,
+`172.30.6.0/24`, DNS `10.20.0.53` and `10.20.0.54`, MTU 1396, ESP AES-128/SHA1
+on UDP 4500, ESP->SSL fallback 15 s.
+
+Wire values follow the oNCP reference layout, not a guess: ESP encryption
+0x02 = AES-128-CBC (0x05 would be AES-256-CBC), ESP authentication
+0x02 = HMAC-SHA1 (0x01 would be HMAC-MD5).
+
+The ESP key block and outbound SPI are synthetic values, included so the tests
+can prove key material is never rendered. The first TLV group (0xFFFF/1)
+carries this note as an unknown attribute, which also exercises
+unknown-attribute tolerance.
+
+The binary exchange happens in the oNCP handshake after the HTTP login, not in
+the login response body, so this blob only mirrors that shape.

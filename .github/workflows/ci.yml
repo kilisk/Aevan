@@ -1,0 +1,162 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+          - macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Release build
+        run: cargo build --release
+
+  package-windows:
+    name: package (windows-x64)
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install just
+        uses: extractions/setup-just@v2
+
+      - name: Install WiX Toolset v7
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix --version 7.0.1
+          "$env:USERPROFILE\.dotnet\tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      # WiX v7 refuses to build until the OSMF EULA is accepted (WIX7015).
+      # Read https://wixtoolset.org/osmf/ before accepting it.
+      - name: Accept WiX OSMF EULA
+        shell: pwsh
+        run: wix eula accept wix7
+
+      - name: Fetch pinned Wintun
+        run: just fetch-wintun
+
+      - name: Build MSI and portable zip
+        run: just dist-windows
+
+      - name: Verify Windows version metadata
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          $expected = @{
+            'aevan.exe'     = 'Aevan VPN client'
+            'aevand.exe'    = 'Aevan daemon'
+            'aevan-gui.exe' = 'Aevan GUI'
+          }
+          foreach ($name in $expected.Keys) {
+            $info = (Get-Item "target/release/$name").VersionInfo
+            if ($info.ProductName -ne 'Aevan') { throw "$name ProductName is '$($info.ProductName)'" }
+            if ($info.FileDescription -ne $expected[$name]) { throw "$name FileDescription is '$($info.FileDescription)'" }
+            if ($info.FileVersion -ne $version) { throw "$name FileVersion is '$($info.FileVersion)', expected '$version'" }
+            if ($info.OriginalFilename -ne $name) { throw "$name OriginalFilename is '$($info.OriginalFilename)'" }
+          }
+
+      - name: Validate MSI
+        shell: pwsh
+        run: |
+          $msi = Get-ChildItem target/dist/*.msi | Select-Object -First 1
+          wix msi validate $msi.FullName
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: aevan-windows-x64
+          path: |
+            target/dist/*.msi
+            target/dist/*.zip
+          if-no-files-found: error
+
+  package-macos:
+    name: package (macos-universal)
+    needs: test
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install just
+        uses: extractions/setup-just@v2
+
+      - name: Build universal .app and .pkg
+        run: just dist-macos
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: aevan-macos-universal
+          path: |
+            target/dist/*.pkg
+            target/dist/Aevan.app
+          if-no-files-found: error
+
+  package-linux:
+    name: package (linux-x64)
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install just
+        uses: extractions/setup-just@v2
+
+      - name: Build Linux tarball
+        run: just dist-linux
+
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aevan-linux-x64
+          path: target/dist/*.tar.gz
+          if-no-files-found: error

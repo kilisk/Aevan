@@ -1,0 +1,41 @@
+[package]
+name = "aevan-gui"
+description = "Native GUI for aevan; a client of the aevand control socket"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[[bin]]
+name = "aevan-gui"
+path = "src/main.rs"
+
+[build-dependencies]
+winresource = { workspace = true }
+
+[dependencies]
+iced = { workspace = true }
+aevan-core = { workspace = true }
+aevan-daemon = { workspace = true }
+aevan-secrets = { workspace = true }
+notify-rust = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+zeroize = { workspace = true }
+
+# Windows: `tao` pumps the hidden tray window's Win32 messages on the tray
+# thread; `tray-icon` provides the icon and menu. Linux stays tray-free (no GTK
+# or libappindicator dependency).
+[target.'cfg(windows)'.dependencies]
+tao = { workspace = true }
+
+# macOS uses an NSStatusItem through `tray-icon` on iced's main thread; it must
+# not pull in `tao`, which would create a second event loop.
+[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
+png = { workspace = true }
+tray-icon = { workspace = true }

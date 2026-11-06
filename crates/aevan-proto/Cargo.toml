@@ -1,0 +1,19 @@
+[package]
+name = "aevan-proto"
+description = "TLS and HTTP building blocks for the aevan Network Connect transport"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+rustls = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+webpki-roots = { workspace = true }
+x509-parser = { workspace = true }
+zeroize = { workspace = true }

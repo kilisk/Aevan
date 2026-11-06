@@ -1,0 +1,23 @@
+[package]
+name = "aevan-secrets"
+description = "Secret storage abstraction and RFC 6238 TOTP for aevan"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+hmac = { workspace = true }
+keyring = { workspace = true }
+sha1 = { workspace = true }
+thiserror = { workspace = true }
+zeroize = { workspace = true }
+
+# The GUI is the first keyring consumer. Enable the real Windows Credential
+# Manager backend on Windows; macOS and Linux stay on the stub until packaging
+# picks their backends (documented in docs/GUI.md).
+[target.'cfg(windows)'.dependencies]
+keyring = { workspace = true, features = ["windows-native"] }

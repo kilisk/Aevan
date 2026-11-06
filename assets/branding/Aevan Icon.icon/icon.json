@@ -1,0 +1,39 @@
+{
+  "fill" : {
+    "linear-gradient" : [
+      "display-p3:0.03137,0.05098,0.12549,1.00000",
+      "srgb:0.09020,0.14902,0.29020,1.00000"
+    ]
+  },
+  "groups" : [
+    {
+      "layers" : [
+        {
+          "image-name" : "Glossy Gradient Folded Arch Logo-1.png",
+          "name" : "Glossy Gradient Folded Arch Logo-1",
+          "position" : {
+            "scale" : 0.82,
+            "translation-in-points" : [
+              2.050000000000068,
+              -1.2299999999999613
+            ]
+          }
+        }
+      ],
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.3
+      }
+    }
+  ],
+  "supported-platforms" : {
+    "circles" : [
+      "watchOS"
+    ],
+    "squares" : "shared"
+  }
+}

@@ -1,0 +1,171 @@
+#![deny(unsafe_code)]
+#![cfg_attr(windows, windows_subsystem = "windows")]
+//! `aevan-gui` — a native desktop client for the `aevand` daemon.
+//!
+//! The GUI is a **daemon client** and nothing more. It never opens a TLS
+//! connection, never reads a credential from argv or the environment, and never
+//! touches routes, DNS or the adapter. Every tunnel action is a versioned JSON
+//! request on the local control endpoint, exactly as the CLI sends it.
+//!
+//! The window is `iced`; all state, transitions, formatting and poll scheduling
+//! live in [`view_model`], which has no toolkit types and is unit-tested
+//! offline.
+
+mod app;
+mod console;
+mod daemon_bridge;
+mod notifications;
+mod tray;
+mod view_model;
+
+use std::process::ExitCode;
+
+use aevan_core::ProfileStore;
+
+use crate::view_model::ViewModel;
+
+const HELP: &str = "\
+aevan-gui — native client for the aevand daemon
+
+Usage: aevan-gui [OPTIONS]
+
+Options:
+      --headless  Print the resolved view-model state and exit without a window
+      --json      Machine-readable output (with --headless)
+  -V, --version   Print the version and exit
+  -h, --help      Print this help and exit
+
+The GUI never authenticates itself: it sends one connect request to aevand over
+the local control socket and displays the status the daemon reports.
+";
+
+#[derive(Debug, Clone, Copy, Default)]
+struct Args {
+    headless: bool,
+    json: bool,
+}
+
+fn main() -> ExitCode {
+    // A GUI-subsystem binary has no console, but it can still print into the
+    // terminal that launched it. This must run before the first print.
+    console::attach_parent_console();
+
+    let args = match parse_args() {
+        Ok(args) => args,
+        Err(message) => {
+            eprintln!("aevan-gui: {message}\n\n{HELP}");
+            return ExitCode::from(2);
+        }
+    };
+
+    if args.headless {
+        return headless(args.json);
+    }
+
+    let store = match ProfileStore::default_path().and_then(|path| ProfileStore::load(&path)) {
+        Ok(store) => store,
+        Err(error) => {
+            eprintln!("aevan-gui: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    match app::run(store) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("aevan-gui: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn parse_args() -> Result<Args, String> {
+    let mut args = Args::default();
+    for argument in std::env::args().skip(1) {
+        match argument.as_str() {
+            "--version" | "-V" => {
+                println!("aevan-gui {}", env!("CARGO_PKG_VERSION"));
+                std::process::exit(0);
+            }
+            "--help" | "-h" => {
+                print!("{HELP}");
+                std::process::exit(0);
+            }
+            "--headless" => args.headless = true,
+            "--json" => args.json = true,
+            other => return Err(format!("unknown argument '{other}'")),
+        }
+    }
+    Ok(args)
+}
+
+/// Print the resolved view-model state and exit.
+///
+/// The status probe is read-only and bounded. A missing daemon is a normal
+/// outcome here and is reported in the document rather than as a process
+/// failure, so CI can run this without elevation or a gateway.
+fn headless(json: bool) -> ExitCode {
+    let now = view_model::now_unix();
+    let store = match ProfileStore::default_path().and_then(|path| ProfileStore::load(&path)) {
+        Ok(store) => store,
+        Err(error) => {
+            eprintln!("aevan-gui: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let mut vm = ViewModel::new(&store, daemon_bridge::endpoint(), now);
+    if let Some(profile) = vm.selected.clone() {
+        let secret = daemon_bridge::totp_secret(&profile);
+        vm.set_totp_secret(&profile, secret);
+    }
+    match daemon_bridge::status() {
+        Ok(status) => vm.apply_status(status),
+        Err(error) => vm.apply_client_error(error),
+    }
+
+    let document = serde_json::json!({
+        "schema_version": 1,
+        "binary": "aevan-gui",
+        "version": env!("CARGO_PKG_VERSION"),
+        "screen": vm.screen.name(),
+        "state": vm.state.name(),
+        "message": vm.state.message(),
+        "selected": vm.selected,
+        "endpoint": vm.endpoint,
+        "log_level": vm.log_level.as_str(),
+        "profiles": vm.profiles,
+        "connection": vm.status,
+    });
+
+    if json {
+        match serde_json::to_string_pretty(&document) {
+            Ok(text) => println!("{text}"),
+            Err(error) => {
+                eprintln!("aevan-gui: cannot serialise the headless state: {error}");
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        println!(
+            "screen: {}",
+            document["screen"].as_str().unwrap_or("profiles")
+        );
+        println!("state: {}", document["state"].as_str().unwrap_or("unknown"));
+        if let Some(message) = document["message"].as_str() {
+            println!("message: {message}");
+        }
+        if let Some(selected) = document["selected"].as_str() {
+            println!("selected: {selected}");
+        }
+        println!("endpoint: {}", document["endpoint"].as_str().unwrap_or(""));
+        println!(
+            "profiles: {}",
+            document["profiles"]
+                .as_array()
+                .map(|profiles| profiles.len())
+                .unwrap_or(0)
+        );
+    }
+    ExitCode::SUCCESS
+}

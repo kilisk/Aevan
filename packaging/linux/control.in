@@ -1,0 +1,13 @@
+Package: aevan
+Version: @VERSION@
+Section: net
+Priority: optional
+Architecture: amd64
+Maintainer: aevan contributors <noreply@example.invalid>
+Depends: ca-certificates
+Description: Ivanti Secure Access client replacement
+ aevan is a small CLI, daemon and GUI for Ivanti Secure Access gateways.
+ .
+ This package is a skeleton. It has not been install-tested and its runtime
+ dependency list is incomplete; build it with `just deb` on a Debian host and
+ review it before distributing it.
