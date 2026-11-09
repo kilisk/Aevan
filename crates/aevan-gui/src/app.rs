@@ -32,7 +32,7 @@ const MUTED: Color = Color::from_rgb(0.55, 0.60, 0.66);
 #[derive(Debug, Clone)]
 pub enum Message {
     Tick,
-    StatusPolled(Result<StatusReport, ClientError>),
+    StatusPolled(Result<(StatusReport, String), ClientError>),
     SelectProfile(String),
     TotpLoaded {
         profile: String,
@@ -183,7 +183,10 @@ impl App {
             Message::StatusPolled(result) => {
                 self.poll_in_flight = false;
                 match result {
-                    Ok(status) => self.vm.apply_status(status),
+                    Ok((status, endpoint)) => {
+                        self.vm.endpoint = endpoint;
+                        self.vm.apply_status(status);
+                    }
                     Err(error) => self.vm.apply_client_error(error),
                 }
             }

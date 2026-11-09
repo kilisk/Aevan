@@ -143,12 +143,30 @@ fn runtime() -> Result<tokio::runtime::Runtime, ClientError> {
         .map_err(|error| ClientError::Transport(error.to_string()))
 }
 
+/// A response paired with the endpoint that answered it.
+#[derive(Debug, Clone)]
+pub struct Answer {
+    /// The daemon's response.
+    pub response: Response,
+    /// Filesystem path (or pipe name) of the endpoint that answered.
+    pub endpoint: String,
+}
+
 /// Send one request and read one response.
 pub fn request(request: &Request, read_timeout: Option<Duration>) -> Result<Response, ClientError> {
+    request_with_endpoint(request, read_timeout).map(|answer| answer.response)
+}
+
+/// Send one request and report which candidate endpoint answered.
+pub fn request_with_endpoint(
+    request: &Request,
+    read_timeout: Option<Duration>,
+) -> Result<Answer, ClientError> {
     let runtime = runtime()?;
     runtime.block_on(async move {
-        let stream = connect_stream().await.map_err(map_connect)?;
-        exchange(stream, request, read_timeout).await
+        let (stream, endpoint) = connect_stream().await?;
+        let response = exchange(stream, request, read_timeout, &endpoint).await?;
+        Ok(Answer { response, endpoint })
     })
 }
 
@@ -156,6 +174,7 @@ async fn exchange<S>(
     stream: S,
     request: &Request,
     read_timeout: Option<Duration>,
+    endpoint: &str,
 ) -> Result<Response, ClientError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -186,7 +205,7 @@ where
             "the daemon closed the connection without a response".into(),
         ));
     }
-    parse_response(&response_line, &server::endpoint_description())
+    parse_response(&response_line, endpoint)
 }
 
 fn parse_response(line: &str, endpoint: &str) -> Result<Response, ClientError> {
@@ -205,7 +224,7 @@ where
 {
     let runtime = runtime()?;
     runtime.block_on(async move {
-        let stream = connect_stream().await.map_err(map_connect)?;
+        let (stream, endpoint) = connect_stream().await?;
         let (read, mut write) = tokio::io::split(stream);
         let line =
             encode_line(request).map_err(|error| ClientError::Protocol(error.to_string()))?;
@@ -219,7 +238,6 @@ where
             .map_err(|error| ClientError::Transport(error.to_string()))?;
 
         let mut reader = BufReader::new(read);
-        let endpoint = server::endpoint_description();
         loop {
             let mut response_line = String::new();
             let read = reader
@@ -235,13 +253,6 @@ where
             }
         }
     })
-}
-
-fn map_connect(error: io::Error) -> ClientError {
-    match ReachFailure::from_connect_error(&error) {
-        Some(failure) => failure.client_error(&server::endpoint_description()),
-        None => ClientError::Transport(error.to_string()),
-    }
 }
 
 /// The `aevand` binary beside the current executable, when present.
@@ -296,21 +307,59 @@ pub fn wait_for_daemon(limit: Duration) -> Result<(), ClientError> {
 }
 
 #[cfg(unix)]
-async fn connect_stream() -> io::Result<tokio::net::UnixStream> {
-    let path = server::endpoint_path().map_err(io::Error::other)?;
-    tokio::net::UnixStream::connect(path).await
+async fn connect_stream() -> Result<(tokio::net::UnixStream, String), ClientError> {
+    let candidates =
+        server::candidate_endpoints().map_err(|error| ClientError::Transport(error.to_string()))?;
+    let mut denied: Option<ClientError> = None;
+    let mut last: Option<ClientError> = None;
+
+    for path in candidates {
+        let endpoint = path.display().to_string();
+        match tokio::net::UnixStream::connect(&path).await {
+            Ok(stream) => return Ok((stream, endpoint)),
+            Err(error) => {
+                let failure = match ReachFailure::from_connect_error(&error) {
+                    Some(failure) => failure.client_error(&endpoint),
+                    None => ClientError::Transport(format!(
+                        "cannot reach the aevan daemon on {endpoint}: {error}"
+                    )),
+                };
+                // Access denied means a daemon is there but the caller may not
+                // open it. Keep that over a later "no daemon" result so the
+                // operator sees the actionable condition.
+                if matches!(failure, ClientError::AccessDenied(_)) {
+                    denied = Some(failure);
+                } else {
+                    last = Some(failure);
+                }
+            }
+        }
+    }
+
+    Err(denied.or(last).unwrap_or_else(|| {
+        ClientError::Unavailable("no control endpoint candidates are configured".into())
+    }))
 }
 
 #[cfg(windows)]
-async fn connect_stream() -> io::Result<tokio::net::windows::named_pipe::NamedPipeClient> {
-    tokio::net::windows::named_pipe::ClientOptions::new().open(server::PIPE_NAME)
+async fn connect_stream(
+) -> Result<(tokio::net::windows::named_pipe::NamedPipeClient, String), ClientError> {
+    tokio::net::windows::named_pipe::ClientOptions::new()
+        .open(server::PIPE_NAME)
+        .map(|stream| (stream, server::PIPE_NAME.to_owned()))
+        .map_err(|error| match ReachFailure::from_connect_error(&error) {
+            Some(failure) => failure.client_error(server::PIPE_NAME),
+            None => ClientError::Transport(format!(
+                "cannot reach the aevan daemon on {}: {error}",
+                server::PIPE_NAME
+            )),
+        })
 }
 
 #[cfg(not(any(unix, windows)))]
-async fn connect_stream() -> io::Result<tokio::io::DuplexStream> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "no control endpoint on this platform",
+async fn connect_stream() -> Result<(tokio::io::DuplexStream, String), ClientError> {
+    Err(ClientError::Transport(
+        "no control endpoint on this platform".into(),
     ))
 }
 

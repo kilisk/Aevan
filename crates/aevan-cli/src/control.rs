@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use aevan_core::{AevanError, AevanResult};
 use aevan_daemon::client::{self, ClientError};
-use aevan_daemon::{LogRecord, Request, Response};
+use aevan_daemon::{LogRecord, Request};
 
 use crate::common;
 
@@ -17,20 +17,32 @@ const RECOVERY_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// `aevan status [--json]`.
 pub fn status(json: bool) -> AevanResult<()> {
-    let response = request(&Request::status(), Some(STATUS_TIMEOUT))?;
-    common::print_status(&response.status.unwrap_or_default(), json);
+    let answer = client::request_with_endpoint(&Request::status(), Some(STATUS_TIMEOUT))
+        .map_err(ClientError::into_aevan)?;
+    if !answer.response.ok {
+        return Err(answer.response.into_error());
+    }
+    common::print_status(
+        &answer.response.status.unwrap_or_default(),
+        json,
+        &answer.endpoint,
+    );
     Ok(())
 }
 
 /// `aevan disconnect [profile|--all]`.
 pub fn disconnect(profile: Option<&str>, all: bool, json: bool) -> AevanResult<()> {
     let request = Request::disconnect(profile.map(str::to_owned), all);
-    match client::request(&request, Some(STATUS_TIMEOUT)) {
-        Ok(response) if response.ok => {
-            common::print_status(&response.status.unwrap_or_default(), json);
+    match client::request_with_endpoint(&request, Some(STATUS_TIMEOUT)) {
+        Ok(answer) if answer.response.ok => {
+            common::print_status(
+                &answer.response.status.unwrap_or_default(),
+                json,
+                &answer.endpoint,
+            );
             Ok(())
         }
-        Ok(response) => Err(response.into_error()),
+        Ok(answer) => Err(answer.response.into_error()),
         Err(error) if error.is_unavailable() => Err(AevanError::AlreadyInState(format!(
             "{error}; already disconnected"
         ))),
@@ -171,15 +183,6 @@ pub fn logs(follow: bool, level: &str, json: bool) -> AevanResult<()> {
     match failure {
         Some(error) => Err(error),
         None => Ok(()),
-    }
-}
-
-fn request(request: &Request, read_timeout: Option<Duration>) -> AevanResult<Response> {
-    let response = client::request(request, read_timeout).map_err(ClientError::into_aevan)?;
-    if response.ok {
-        Ok(response)
-    } else {
-        Err(response.into_error())
     }
 }
 

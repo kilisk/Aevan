@@ -73,6 +73,7 @@ dependencies = [
  "aevan-nc",
  "aevan-proto",
  "aevan-tun",
+ "libc",
  "serde",
  "serde_json",
  "tokio",

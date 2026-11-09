@@ -58,20 +58,22 @@ pub fn network_error(error: ProtoError) -> AevanError {
     }
 }
 
-/// Print a daemon status snapshot.
-pub fn print_status(status: &StatusReport, json: bool) {
+/// Print a daemon status snapshot and the endpoint that answered it.
+pub fn print_status(status: &StatusReport, json: bool, endpoint: &str) {
     if json {
         #[derive(serde::Serialize)]
         struct Document<'a> {
             schema_version: u32,
             ok: bool,
             command: &'static str,
+            endpoint: &'a str,
             status: &'a StatusReport,
         }
         let document = Document {
             schema_version: SCHEMA_VERSION,
             ok: true,
             command: "status",
+            endpoint,
             status,
         };
         match serde_json::to_string_pretty(&document) {
@@ -82,6 +84,7 @@ pub fn print_status(status: &StatusReport, json: bool) {
     }
 
     println!("state: {}", status.state);
+    println!("endpoint: {endpoint}");
     if let Some(reason) = &status.reason {
         println!("reason: {reason}");
     }

@@ -5,7 +5,6 @@
 //! lifetime of the stream; every other command returns one response line.
 
 use std::io;
-#[cfg(unix)]
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -22,14 +21,112 @@ use crate::runtime::Daemon;
 #[cfg(windows)]
 pub const PIPE_NAME: &str = r"\\.\pipe\aevan";
 
-/// Unix socket file name inside the config directory.
+/// Unix socket file name inside the config or system directory.
 #[cfg(unix)]
 pub const SOCKET_FILE: &str = "aevan.sock";
 
-/// Path of the Unix control socket.
+/// The per-user control socket, beside the profile store.
+#[cfg(unix)]
+pub fn per_user_endpoint_path() -> AevanResult<PathBuf> {
+    Ok(aevan_core::paths::config_dir()?.join(SOCKET_FILE))
+}
+
+/// The machine-wide control socket a root daemon binds.
+///
+/// `None` on platforms without a Unix socket.
+#[cfg(target_os = "macos")]
+pub fn system_endpoint_path() -> Option<PathBuf> {
+    Some(PathBuf::from("/Library/Application Support/Aevan").join(SOCKET_FILE))
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+pub fn system_endpoint_path() -> Option<PathBuf> {
+    Some(PathBuf::from("/run/aevan").join(SOCKET_FILE))
+}
+
+#[cfg(not(unix))]
+pub fn system_endpoint_path() -> Option<PathBuf> {
+    None
+}
+
+/// The endpoints a client tries, in order: system first, then per-user.
+///
+/// The list is built without touching the filesystem or opening a socket so it
+/// can be unit-tested everywhere.
+#[cfg(unix)]
+pub fn candidate_endpoints() -> AevanResult<Vec<PathBuf>> {
+    Ok(ordered_candidates(
+        system_endpoint_path(),
+        per_user_endpoint_path()?,
+    ))
+}
+
+#[cfg(not(unix))]
+pub fn candidate_endpoints() -> AevanResult<Vec<PathBuf>> {
+    Ok(Vec::new())
+}
+
+#[cfg(unix)]
+fn ordered_candidates(system: Option<PathBuf>, per_user: PathBuf) -> Vec<PathBuf> {
+    let mut candidates = Vec::with_capacity(2);
+    if let Some(system) = system {
+        candidates.push(system);
+    }
+    if !candidates.contains(&per_user) {
+        candidates.push(per_user);
+    }
+    candidates
+}
+
+/// Select the binding endpoint for a daemon: system when root, per-user
+/// otherwise. Pure so the root/non-root split is testable without a real uid.
+#[cfg(unix)]
+fn select_binding_endpoint(root: bool, system: Option<PathBuf>, per_user: PathBuf) -> PathBuf {
+    match (root, system) {
+        (true, Some(system)) => system,
+        _ => per_user,
+    }
+}
+
+/// Path of the Unix control socket the daemon should bind.
+///
+/// A root daemon (including one started by launchd) uses the machine-wide
+/// endpoint; a user daemon keeps the per-user endpoint.
 #[cfg(unix)]
 pub fn endpoint_path() -> AevanResult<PathBuf> {
-    Ok(aevan_core::paths::config_dir()?.join(SOCKET_FILE))
+    endpoint_path_for_root(process_is_root())
+}
+
+#[cfg(unix)]
+pub fn endpoint_path_for_root(root: bool) -> AevanResult<PathBuf> {
+    Ok(select_binding_endpoint(
+        root,
+        system_endpoint_path(),
+        per_user_endpoint_path()?,
+    ))
+}
+
+/// Whether `path` is the machine-wide system endpoint.
+#[cfg(unix)]
+pub fn is_system_endpoint(path: &std::path::Path) -> bool {
+    system_endpoint_path().is_some_and(|system| system == path)
+}
+
+#[cfg(unix)]
+fn process_is_root() -> bool {
+    unix_uid::is_root()
+}
+
+#[cfg(unix)]
+mod unix_uid {
+    //! The crate denies `unsafe_code`; `geteuid` is the only call needed here
+    //! and it has no preconditions.
+    #![allow(unsafe_code)]
+
+    pub fn is_root() -> bool {
+        // SAFETY: geteuid takes no arguments and cannot fail.
+        unsafe { libc::geteuid() == 0 }
+    }
 }
 
 /// The error used when another daemon already owns the control endpoint.
@@ -263,10 +360,13 @@ async fn platform_serve(daemon: Arc<Daemon>) -> AevanResult<()> {
     use std::os::unix::fs::PermissionsExt;
 
     let path = endpoint_path()?;
+    let system = is_system_endpoint(&path);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
         let mut permissions = std::fs::metadata(parent)?.permissions();
-        permissions.set_mode(0o700);
+        // The system directory must be traversable by the logged-in user; the
+        // per-user directory stays private.
+        permissions.set_mode(if system { 0o755 } else { 0o700 });
         std::fs::set_permissions(parent, permissions)?;
     }
 
@@ -279,7 +379,9 @@ async fn platform_serve(daemon: Arc<Daemon>) -> AevanResult<()> {
 
     let listener = tokio::net::UnixListener::bind(&path)?;
     let mut permissions = std::fs::metadata(&path)?.permissions();
-    permissions.set_mode(0o600);
+    // A root daemon must accept the logged-in user's CLI and GUI. The socket
+    // alone is world-writable; nothing else is widened.
+    permissions.set_mode(if system { 0o666 } else { 0o600 });
     std::fs::set_permissions(&path, permissions)?;
     tracing::info!(endpoint = %path.display(), "aevand control socket listening");
 
@@ -574,5 +676,71 @@ mod tests {
         assert_eq!(report.rolled_back, 2);
         assert_eq!(report.failed(), 1);
         assert!(status.reason.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_system_endpoint_is_tried_before_the_per_user_endpoint() {
+        let system = PathBuf::from("/Library/Application Support/Aevan/aevan.sock");
+        let per_user = PathBuf::from("/Users/example/Library/Application Support/aevan/aevan.sock");
+        assert_eq!(
+            ordered_candidates(Some(system.clone()), per_user.clone()),
+            vec![system, per_user]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_system_endpoint_is_listed_once() {
+        let system = PathBuf::from("/Library/Application Support/Aevan/aevan.sock");
+        assert_eq!(
+            ordered_candidates(Some(system.clone()), system.clone()),
+            vec![system]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_root_daemon_binds_system_and_other_users_bind_per_user() {
+        let system = PathBuf::from("/Library/Application Support/Aevan/aevan.sock");
+        let per_user = PathBuf::from("/Users/example/Library/Application Support/aevan/aevan.sock");
+        assert_eq!(
+            select_binding_endpoint(true, Some(system.clone()), per_user.clone()),
+            system
+        );
+        assert_eq!(
+            select_binding_endpoint(false, Some(system), per_user.clone()),
+            per_user
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unknown_uid_without_a_system_endpoint_keeps_the_per_user_endpoint() {
+        let per_user = PathBuf::from("/Users/example/.config/aevan/aevan.sock");
+        assert_eq!(
+            select_binding_endpoint(true, None, per_user.clone()),
+            per_user
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_macos_system_endpoint_matches_the_documented_path() {
+        assert_eq!(
+            system_endpoint_path().as_deref(),
+            Some(std::path::Path::new(
+                "/Library/Application Support/Aevan/aevan.sock"
+            ))
+        );
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn the_linux_system_endpoint_matches_the_documented_path() {
+        assert_eq!(
+            system_endpoint_path().as_deref(),
+            Some(std::path::Path::new("/run/aevan/aevan.sock"))
+        );
     }
 }

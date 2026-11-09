@@ -25,10 +25,10 @@ pub fn endpoint() -> String {
     aevan_daemon::server::endpoint_description()
 }
 
-/// Poll `status` once.
-pub fn status() -> Result<StatusReport, ClientError> {
-    let response = client::request(&Request::status(), Some(STATUS_TIMEOUT))?;
-    expect_status(response)
+/// Poll `status` once and report which candidate endpoint answered.
+pub fn status() -> Result<(StatusReport, String), ClientError> {
+    let answer = client::request_with_endpoint(&Request::status(), Some(STATUS_TIMEOUT))?;
+    Ok((expect_status(answer.response)?, answer.endpoint))
 }
 
 /// Submit exactly one `connect` request.

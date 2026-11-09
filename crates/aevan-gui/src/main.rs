@@ -132,7 +132,10 @@ fn headless(json: bool) -> ExitCode {
         vm.set_totp_secret(&profile, secret);
     }
     match daemon_bridge::status() {
-        Ok(status) => vm.apply_status(status),
+        Ok((status, endpoint)) => {
+            vm.endpoint = endpoint;
+            vm.apply_status(status);
+        }
         Err(error) => vm.apply_client_error(error),
     }
 

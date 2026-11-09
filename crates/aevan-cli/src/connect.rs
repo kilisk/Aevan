@@ -126,13 +126,13 @@ fn via_daemon(profile_name: Option<&str>, flags: &ConnectFlags) -> AevanResult<(
     // The daemon stays a deliberate, visible thing: only `aevan` with no
     // subcommand starts it implicitly. `aevan connect` reports the reach failure
     // so the operator decides when and how to elevate.
-    let response = client::request(&request, None).map_err(ClientError::into_aevan)?;
+    let answer = client::request_with_endpoint(&request, None).map_err(ClientError::into_aevan)?;
 
-    if !response.ok {
-        return Err(response.into_error());
+    if !answer.response.ok {
+        return Err(answer.response.into_error());
     }
-    let status = response.status.unwrap_or_default();
-    common::print_status(&status, flags.json);
+    let status = answer.response.status.unwrap_or_default();
+    common::print_status(&status, flags.json, &answer.endpoint);
     Ok(())
 }
 
