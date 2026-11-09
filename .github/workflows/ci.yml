@@ -41,6 +41,37 @@ jobs:
       - name: Release build
         run: cargo build --release
 
+      # Defect 1 proof: a root daemon binds the machine-wide socket, and the
+      # normal runner user reaches it through the candidate list.
+      - name: Control socket is reachable across UIDs (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          cargo build --bins
+          socket="/Library/Application Support/Aevan/aevan.sock"
+          sudo rm -rf "/Library/Application Support/Aevan"
+          sudo ./target/debug/aevand > /tmp/aevand-ci.log 2>&1 &
+          daemon_pid=$!
+          for _ in $(seq 1 100); do
+            [ -S "$socket" ] && break
+            sleep 0.1
+          done
+          if [ ! -S "$socket" ]; then
+            echo "daemon did not create $socket"
+            cat /tmp/aevand-ci.log
+            exit 1
+          fi
+          echo "socket: $socket"
+          stat -f 'socket mode=%Sp owner=%Su:%Sg path=%N' "$socket"
+          stat -f 'dir mode=%Sp owner=%Su:%Sg path=%N' "/Library/Application Support/Aevan"
+          ./target/debug/aevan status --json | tee /tmp/aevan-status.json
+          grep -F '"endpoint": "/Library/Application Support/Aevan/aevan.sock"' /tmp/aevan-status.json
+          test "$(stat -f '%Sp' "$socket")" = "srw-rw-rw-"
+          test "$(stat -f '%Sp' "/Library/Application Support/Aevan")" = "drwxr-xr-x"
+          sudo pkill -x aevand || true
+          wait "$daemon_pid" || true
+          sudo rm -rf "/Library/Application Support/Aevan"
+
       # The smoke example is the first real proof that a device opens on macOS
       # and Linux. It is built unprivileged and run under sudo with the skip
       # escape hatch explicitly removed, so a broken backend fails the job.
