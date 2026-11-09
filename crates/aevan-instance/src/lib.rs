@@ -113,6 +113,17 @@ pub fn show_running(timeout: Duration) -> io::Result<()> {
     platform::endpoint()?.send_show(timeout)
 }
 
+/// Remove this user's endpoint file when the primary instance exits normally.
+///
+/// Windows releases the pipe name when the owning process exits, so this is a
+/// no-op there. On Unix a quit would otherwise leave a dead `aevan-gui.sock`
+/// behind for the next start to probe and clean up.
+pub fn cleanup_endpoint() {
+    if let Ok(endpoint) = platform::endpoint() {
+        let _ = endpoint.remove_stale();
+    }
+}
+
 /// Human-readable endpoint used in diagnostics.
 pub fn endpoint_description() -> String {
     platform::description()
@@ -294,6 +305,13 @@ mod platform {
         path: PathBuf,
     }
 
+    #[cfg(test)]
+    impl UnixEndpoint {
+        pub(crate) fn at(path: PathBuf) -> Self {
+            Self { path }
+        }
+    }
+
     pub fn endpoint() -> io::Result<UnixEndpoint> {
         let path = paths::config_dir()
             .map_err(|error| io::Error::other(error.to_string()))?
@@ -309,6 +327,15 @@ mod platform {
 
     pub struct UnixListenerHandle {
         listener: UnixListener,
+        path: PathBuf,
+    }
+
+    impl Drop for UnixListenerHandle {
+        fn drop(&mut self) {
+            // A clean quit leaves no stale socket behind. A crashed process
+            // cannot run this, so `claim` still removes such a file.
+            let _ = fs::remove_file(&self.path);
+        }
     }
 
     impl Listener for UnixListenerHandle {
@@ -347,7 +374,10 @@ mod platform {
                 permissions.set_mode(0o600);
                 let _ = fs::set_permissions(&self.path, permissions);
             }
-            Ok(UnixListenerHandle { listener })
+            Ok(UnixListenerHandle {
+                listener,
+                path: self.path.clone(),
+            })
         }
 
         fn send_show(&self, timeout: Duration) -> io::Result<()> {
@@ -609,5 +639,88 @@ mod tests {
             hook_count.fetch_add(1, Ordering::SeqCst);
         }));
         assert_eq!(count.load(Ordering::SeqCst), 3);
+    }
+
+    #[cfg(unix)]
+    mod unix {
+        use std::fs;
+        use std::os::unix::net::UnixListener;
+        use std::path::PathBuf;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        use super::super::platform::UnixEndpoint;
+        use super::super::{claim, Claim, Listener};
+
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+
+        fn temp_dir() -> PathBuf {
+            let unique = NEXT.fetch_add(1, Ordering::SeqCst);
+            let dir = std::env::temp_dir().join(format!(
+                "aevan-instance-test-{}-{unique}",
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).expect("temp dir");
+            dir
+        }
+
+        #[test]
+        fn a_stale_socket_is_removed_and_this_process_becomes_primary() {
+            let dir = temp_dir();
+            let path = dir.join("aevan-gui.sock");
+            // Bind then drop the raw listener: the inode stays behind but
+            // nothing listens, which is exactly a crashed instance's socket.
+            let dead = UnixListener::bind(&path).expect("bind");
+            drop(dead);
+            assert!(path.exists());
+
+            let endpoint = UnixEndpoint::at(path.clone());
+            let Claim::Primary(listener) = claim(&endpoint).expect("claim") else {
+                panic!("a stale socket must be replaced by a primary");
+            };
+            assert!(path.exists(), "the new primary owns the path");
+
+            // Dropping the handle is the normal-quit cleanup: no stale file.
+            drop(listener);
+            assert!(!path.exists(), "a clean quit must unlink the socket");
+            let _ = fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn a_live_socket_makes_the_second_instance_send_show_and_exit() {
+            let dir = temp_dir();
+            let path = dir.join("aevan-gui.sock");
+
+            let endpoint = UnixEndpoint::at(path.clone());
+            let Claim::Primary(listener) = claim(&endpoint).expect("claim") else {
+                panic!("first instance must be primary");
+            };
+            let shown = Arc::new(AtomicBool::new(false));
+            let hooked = shown.clone();
+            let server = std::thread::spawn(move || {
+                Box::new(listener).serve(Box::new(move || {
+                    hooked.store(true, Ordering::SeqCst);
+                }));
+            });
+
+            let second = UnixEndpoint::at(path.clone());
+            match claim(&second).expect("second claim") {
+                Claim::Secondary => {}
+                Claim::Primary(_) => panic!("the second instance must not own the endpoint"),
+            }
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            while !shown.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(shown.load(Ordering::SeqCst), "the primary saw 'show'");
+
+            let _ = fs::remove_file(&path);
+            let _ = fs::remove_dir_all(&dir);
+            // The serve loop is intentionally process-lived; detaching the test
+            // thread is enough and avoids a test-only shutdown channel.
+            drop(server);
+        }
     }
 }

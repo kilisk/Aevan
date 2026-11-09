@@ -1312,7 +1312,8 @@ fn autostart_change_task(enabled: bool) -> Task<Message> {
     )
 }
 
-/// Stop a daemon this GUI started, then exit.
+/// Stop a daemon this GUI started, clean up the single-instance endpoint, then
+/// exit.
 ///
 /// macOS never stops the daemon here: it is a keepalive system LaunchDaemon
 /// and Quit leaves it running (and idle after the disconnect). Disconnect is
@@ -1324,6 +1325,7 @@ fn finish_quit(shutdown_daemon: bool) -> Task<Message> {
             if shutdown_daemon {
                 let _ = tokio::task::spawn_blocking(daemon_bridge::shutdown).await;
             }
+            aevan_instance::cleanup_endpoint();
         },
         |_| Message::QuitReady,
     )
