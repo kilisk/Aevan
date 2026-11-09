@@ -476,4 +476,251 @@ mod tests {
         );
     }
 
+    use std::cell::RefCell;
+    use std::collections::{HashMap, HashSet};
+    use std::rc::Rc;
+
+    #[derive(Clone, Default)]
+    struct FakeHost {
+        commands: Rc<RefCell<HashSet<String>>>,
+        files: Rc<RefCell<HashMap<PathBuf, Vec<u8>>>>,
+    }
+
+    impl FakeHost {
+        fn command(&self, name: &str) {
+            self.commands.borrow_mut().insert(name.to_owned());
+        }
+
+        fn file(&self, path: &str, bytes: &[u8]) {
+            self.files
+                .borrow_mut()
+                .insert(PathBuf::from(path), bytes.to_vec());
+        }
+
+        fn contains(&self, path: &str) -> bool {
+            self.files.borrow().contains_key(&PathBuf::from(path))
+        }
+
+        fn bytes(&self, path: &str) -> Option<Vec<u8>> {
+            self.files.borrow().get(&PathBuf::from(path)).cloned()
+        }
+    }
+
+    impl DnsHost for FakeHost {
+        fn command_exists(&self, program: &str) -> bool {
+            self.commands.borrow().contains(program)
+        }
+
+        fn path_exists(&self, path: &Path) -> bool {
+            self.files.borrow().contains_key(path)
+        }
+
+        fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
+            self.files
+                .borrow()
+                .get(path)
+                .cloned()
+                .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))
+        }
+
+        fn write(&self, path: &Path, bytes: &[u8], _mode: u32) -> std::io::Result<()> {
+            self.files
+                .borrow_mut()
+                .insert(path.to_path_buf(), bytes.to_vec());
+            Ok(())
+        }
+
+        fn remove(&self, path: &Path) -> std::io::Result<()> {
+            self.files
+                .borrow_mut()
+                .remove(path)
+                .map(|_| ())
+                .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))
+        }
+    }
+
+    fn server() -> IpAddr {
+        IpAddr::V4(Ipv4Addr::new(10, 251, 3, 18))
+    }
+
+    fn applier(runner: &RecordingRunner, host: FakeHost) -> PlatformApplier {
+        PlatformApplier::with_host(
+            Box::new(runner.clone()),
+            "aevan0",
+            Box::new(host),
+            PathBuf::from("/etc/resolv.conf"),
+            PathBuf::from("/etc/resolv.conf.aevan.bak"),
+        )
+    }
+
+    fn context(change: &Change) -> &DnsContext {
+        match change {
+            Change::SetDns { context, .. } => context,
+            other => panic!("expected SetDns, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolved_sets_dns_and_a_routing_domain_then_reverts() {
+        let runner = RecordingRunner::new();
+        let host = FakeHost::default();
+        host.command("resolvectl");
+        host.file(RESOLVED_SOCKET, b"");
+        let mut applier = applier(&runner, host);
+
+        let mut change = Change::SetDns {
+            old: Vec::new(),
+            new: vec![server()],
+            context: DnsContext::Unspecified,
+        };
+        applier.prepare(&mut change).expect("prepare");
+        assert_eq!(context(&change), &DnsContext::LinuxResolved);
+        applier.apply(&change).expect("apply");
+        applier.undo(&change).expect("revert");
+
+        let calls: Vec<Vec<String>> = runner
+            .calls()
+            .into_iter()
+            .map(|call| {
+                let mut args = vec![call.program];
+                args.extend(call.args);
+                args
+            })
+            .collect();
+        assert_eq!(calls[0], vec!["resolvectl", "dns", "aevan0", "10.251.3.18"]);
+        assert_eq!(calls[1], vec!["resolvectl", "domain", "aevan0", "~."]);
+        assert_eq!(calls[2], vec!["resolvectl", "revert", "aevan0"]);
+    }
+
+    #[test]
+    fn the_remembered_resolved_mechanism_is_used_for_revert() {
+        let runner = RecordingRunner::new();
+        let host = FakeHost::default();
+        host.command("resolvectl");
+        host.file(RESOLVED_SOCKET, b"");
+        let shared = host.clone();
+        let mut applier = applier(&runner, host);
+
+        let mut change = Change::SetDns {
+            old: Vec::new(),
+            new: vec![server()],
+            context: DnsContext::Unspecified,
+        };
+        applier.prepare(&mut change).expect("prepare");
+        applier.apply(&change).expect("apply");
+
+        // The environment changed after apply.
+        shared.commands.borrow_mut().clear();
+        shared.command("resolvconf");
+
+        applier.undo(&change).expect("revert");
+        assert!(runner
+            .calls()
+            .iter()
+            .all(|call| call.program == "resolvectl"));
+        assert!(runner
+            .calls()
+            .iter()
+            .any(|call| call.args == vec!["revert", "aevan0"]));
+    }
+
+    #[test]
+    fn resolvconf_writes_a_nameserver_block_on_stdin_and_deletes_on_revert() {
+        let runner = RecordingRunner::new();
+        let host = FakeHost::default();
+        host.command("resolvconf");
+        let mut applier = applier(&runner, host);
+
+        let mut change = Change::SetDns {
+            old: Vec::new(),
+            new: vec![server(), IpAddr::V4(Ipv4Addr::new(10, 249, 10, 13))],
+            context: DnsContext::Unspecified,
+        };
+        applier.prepare(&mut change).expect("prepare");
+        assert_eq!(context(&change), &DnsContext::LinuxResolvconf);
+        applier.apply(&change).expect("apply");
+        applier.undo(&change).expect("revert");
+
+        let calls = runner.calls();
+        assert_eq!(calls[0].program, "resolvconf");
+        assert_eq!(calls[0].args, vec!["-a", "aevan0"]);
+        assert_eq!(
+            calls[0].input,
+            b"nameserver 10.251.3.18\nnameserver 10.249.10.13\n"
+        );
+        assert_eq!(calls[1].program, "resolvconf");
+        assert_eq!(calls[1].args, vec!["-d", "aevan0"]);
+    }
+
+    #[test]
+    fn the_file_fallback_creates_one_backup_and_restores_it_byte_for_byte() {
+        let runner = RecordingRunner::new();
+        let host = FakeHost::default();
+        let original = b"nameserver 1.1.1.1\nsearch example.test\noptions edns0\n";
+        host.file(RESOLV_CONF, original);
+        let mut applier = applier(&runner, host.clone());
+
+        let mut change = Change::SetDns {
+            old: Vec::new(),
+            new: vec![server()],
+            context: DnsContext::Unspecified,
+        };
+        applier.prepare(&mut change).expect("prepare");
+        assert_eq!(context(&change), &DnsContext::LinuxFile);
+
+        applier.apply(&change).expect("apply");
+
+        assert_eq!(
+            host.bytes(RESOLV_CONF_BACKUP).as_deref(),
+            Some(original.as_slice())
+        );
+        let managed = host.bytes(RESOLV_CONF).expect("managed file");
+        assert!(String::from_utf8_lossy(&managed).contains("nameserver 10.251.3.18"));
+
+        // A second apply must not overwrite the existing backup.
+        applier.apply(&change).expect("second apply");
+        assert_eq!(
+            host.bytes(RESOLV_CONF_BACKUP).as_deref(),
+            Some(original.as_slice())
+        );
+
+        applier.undo(&change).expect("revert");
+        assert_eq!(
+            host.bytes(RESOLV_CONF).as_deref(),
+            Some(original.as_slice())
+        );
+        assert!(!host.contains(RESOLV_CONF_BACKUP));
+        assert!(
+            runner.calls().is_empty(),
+            "the file fallback runs no command"
+        );
+    }
+
+    #[test]
+    fn an_existing_backup_from_a_crashed_run_is_the_restore_source() {
+        let runner = RecordingRunner::new();
+        let host = FakeHost::default();
+        host.file(RESOLV_CONF, b"nameserver 10.251.3.18\n");
+        host.file(RESOLV_CONF_BACKUP, b"nameserver 9.9.9.9\n");
+        let mut applier = applier(&runner, host.clone());
+
+        let mut change = Change::SetDns {
+            old: Vec::new(),
+            new: vec![server()],
+            context: DnsContext::Unspecified,
+        };
+        applier.prepare(&mut change).expect("prepare");
+        applier.apply(&change).expect("apply");
+        assert_eq!(
+            host.bytes(RESOLV_CONF_BACKUP).as_deref(),
+            Some(b"nameserver 9.9.9.9\n".as_slice())
+        );
+
+        applier.undo(&change).expect("revert");
+        assert_eq!(
+            host.bytes(RESOLV_CONF).as_deref(),
+            Some(b"nameserver 9.9.9.9\n".as_slice())
+        );
+        assert!(!host.contains(RESOLV_CONF_BACKUP));
+    }
 }

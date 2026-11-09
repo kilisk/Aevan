@@ -426,4 +426,180 @@ mod tests {
         );
     }
 
+    fn v4(octets: [u8; 4]) -> IpAddr {
+        IpAddr::V4(Ipv4Addr::from(octets))
+    }
+
+    fn service_map(interface: &str, service: &str) -> String {
+        format!(
+            "An asterisk (*) denotes that a network service is disabled.\n\
+             (1) {service}\n\
+             (Hardware Port: Ethernet, Device: {interface})\n"
+        )
+    }
+
+    fn queue_primary_service(runner: &RecordingRunner, interface: &str, service: &str) {
+        runner.respond(
+            "route",
+            &format!("   route to: default\n  interface: {interface}\n"),
+        );
+        runner.respond("networksetup", &service_map(interface, service));
+    }
+
+    #[test]
+    fn dns_apply_records_the_old_servers_and_sets_the_new_list() {
+        let runner = RecordingRunner::new();
+        queue_primary_service(&runner, "en0", "Wi-Fi");
+        runner.respond("networksetup", "10.0.0.53\n10.0.0.54\n");
+
+        let mut applier =
+            crate::apply::platform_applier_unchecked(Box::new(runner.clone()), "utun3");
+        let mut change = Change::SetDns {
+            old: Vec::new(),
+            new: vec![v4([10, 251, 3, 18]), v4([10, 249, 10, 13])],
+            context: DnsContext::Unspecified,
+        };
+        applier.prepare(&mut change).expect("prepare");
+        applier.apply(&change).expect("apply dns");
+
+        assert_eq!(
+            change,
+            Change::SetDns {
+                old: vec![v4([10, 0, 0, 53]), v4([10, 0, 0, 54])],
+                new: vec![v4([10, 251, 3, 18]), v4([10, 249, 10, 13])],
+                context: DnsContext::MacosService("Wi-Fi".into()),
+            }
+        );
+
+        let calls = runner.calls();
+        let networksetup: Vec<Vec<String>> = calls
+            .iter()
+            .filter(|call| call.program == "networksetup")
+            .map(|call| call.args.clone())
+            .collect();
+        assert_eq!(networksetup[0], vec!["-listnetworkserviceorder"]);
+        assert_eq!(networksetup[1], vec!["-getdnsservers", "Wi-Fi"]);
+        assert_eq!(
+            networksetup[2],
+            vec!["-setdnsservers", "Wi-Fi", "10.251.3.18", "10.249.10.13"]
+        );
+        // Both flush commands are attempted after the set.
+        assert!(calls
+            .iter()
+            .any(|call| call.program == "dscacheutil" && call.args == vec!["-flushcache"]));
+        assert!(calls
+            .iter()
+            .any(|call| call.program == "killall" && call.args == vec!["-HUP", "mDNSResponder"]));
+    }
+
+    #[test]
+    fn revert_restores_the_recorded_servers() {
+        let runner = RecordingRunner::new();
+        queue_primary_service(&runner, "en0", "Wi-Fi");
+
+        let mut session = Session::new(crate::apply::platform_applier_unchecked(
+            Box::new(runner.clone()),
+            "utun3",
+        ));
+        session
+            .apply(Change::SetDns {
+                old: vec![v4([10, 0, 0, 53])],
+                new: vec![v4([10, 251, 3, 18])],
+                context: DnsContext::MacosService("Wi-Fi".into()),
+            })
+            .expect("apply");
+        session.rollback().expect("rollback");
+
+        let networksetup: Vec<Vec<String>> = runner
+            .calls()
+            .into_iter()
+            .filter(|call| call.program == "networksetup")
+            .map(|call| call.args)
+            .collect();
+        assert_eq!(
+            networksetup[0],
+            vec!["-setdnsservers", "Wi-Fi", "10.251.3.18"]
+        );
+        assert_eq!(
+            networksetup[1],
+            vec!["-setdnsservers", "Wi-Fi", "10.0.0.53"]
+        );
+    }
+
+    #[test]
+    fn revert_of_empty_previous_dns_uses_the_empty_marker() {
+        let runner = RecordingRunner::new();
+        let mut applier =
+            crate::apply::platform_applier_unchecked(Box::new(runner.clone()), "utun3");
+        let change = Change::SetDns {
+            old: Vec::new(),
+            new: vec![v4([10, 251, 3, 18])],
+            context: DnsContext::MacosService("Wi-Fi".into()),
+        };
+        applier.undo(&change).expect("revert");
+
+        let networksetup: Vec<Vec<String>> = runner
+            .calls()
+            .into_iter()
+            .filter(|call| call.program == "networksetup")
+            .map(|call| call.args)
+            .collect();
+        assert_eq!(networksetup, vec![vec!["-setdnsservers", "Wi-Fi", "Empty"]]);
+    }
+
+    #[test]
+    fn a_failed_flush_does_not_fail_the_step() {
+        let runner = RecordingRunner::new();
+        runner.respond_failure("dscacheutil", "flush failed");
+        runner.respond_failure("killall", "no such process");
+
+        let mut applier =
+            crate::apply::platform_applier_unchecked(Box::new(runner.clone()), "utun3");
+        let change = Change::SetDns {
+            old: Vec::new(),
+            new: vec![v4([10, 251, 3, 18])],
+            context: DnsContext::MacosService("Wi-Fi".into()),
+        };
+        applier.apply(&change).expect("flush failures are warnings");
+        assert!(runner
+            .calls()
+            .iter()
+            .any(|call| call.program == "dscacheutil"));
+        assert!(runner.calls().iter().any(|call| call.program == "killall"));
+    }
+
+    #[test]
+    fn ambiguous_service_mapping_falls_back_to_the_first_enabled_service() {
+        let runner = RecordingRunner::new();
+        runner.respond("route", "interface: en0\n");
+        runner.respond(
+            "networksetup",
+            "(1) Office\n(Hardware Port: Ethernet, Device: en0)\n\
+             (2) Lab\n(Hardware Port: USB, Device: en0)\n",
+        );
+        runner.respond(
+            "networksetup",
+            "An asterisk (*) denotes that a network service is disabled.\n\
+             *Disabled\n\
+             Wi-Fi\n\
+             Ethernet\n",
+        );
+
+        let mut applier =
+            crate::apply::platform_applier_unchecked(Box::new(runner.clone()), "utun3");
+        let mut change = Change::SetDns {
+            old: Vec::new(),
+            new: vec![v4([10, 251, 3, 18])],
+            context: DnsContext::Unspecified,
+        };
+        applier.prepare(&mut change).expect("prepare");
+        assert_eq!(
+            change,
+            Change::SetDns {
+                old: Vec::new(),
+                new: vec![v4([10, 251, 3, 18])],
+                context: DnsContext::MacosService("Wi-Fi".into()),
+            }
+        );
+    }
 }

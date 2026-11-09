@@ -259,4 +259,33 @@ mod tests {
         assert_eq!(call.display(), "netsh name=Aevan address=10.0.0.1");
     }
 
+    #[test]
+    fn queued_responses_are_consumed_per_program() {
+        let runner = RecordingRunner::new();
+        runner.respond("networksetup", "There aren't any DNS Servers set on Wi-Fi.");
+        runner.respond_failure("route", "no default route");
+
+        let mut handle = runner.clone();
+        let dns = handle
+            .run("networksetup", &["-getdnsservers", "Wi-Fi"])
+            .expect("dns");
+        assert!(String::from_utf8_lossy(&dns.stdout).contains("aren't any"));
+        let route = handle
+            .run("route", &["-n", "get", "default"])
+            .expect("route");
+        assert!(!route.status.success());
+        let fallback = handle.run("dscacheutil", &["-flushcache"]).expect("flush");
+        assert!(fallback.status.success());
+    }
+
+    #[test]
+    fn input_is_recorded_for_stdin_commands() {
+        let runner = RecordingRunner::new();
+        let mut handle = runner.clone();
+        handle
+            .run_with_input("resolvconf", &["-a", "aevan0"], b"nameserver 10.0.0.1\n")
+            .expect("resolvconf");
+        let calls = runner.calls();
+        assert_eq!(calls[0].input, b"nameserver 10.0.0.1\n");
+    }
 }
