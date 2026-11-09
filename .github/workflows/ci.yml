@@ -218,6 +218,15 @@ jobs:
           /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist" | grep -Fx 'com.github.kilisk.aevan'
           test -f "$app/Contents/Resources/AppIcon.icns"
           echo "AppIcon.icns: present"
+          rm -rf /tmp/AppIcon.iconset
+          iconutil -c iconset "$app/Contents/Resources/AppIcon.icns" -o /tmp/AppIcon.iconset
+          echo "icns sizes: $(ls /tmp/AppIcon.iconset | wc -l | tr -d ' ')"; ls /tmp/AppIcon.iconset
+          test "$(ls /tmp/AppIcon.iconset | wc -l)" -ge 8
+          if [ -f "$app/Contents/Resources/Assets.car" ]; then
+            echo "Assets.car: $(wc -c <"$app/Contents/Resources/Assets.car") bytes (layered icon)"
+          else
+            echo "Assets.car: absent, flat icns only"
+          fi
           "$app/Contents/MacOS/aevan-gui" --version
           test -x "$app/Contents/MacOS/aevand"
           "$app/Contents/MacOS/aevand" --version

@@ -25,25 +25,29 @@ build_icon() {
     local icns="$resources/AppIcon.icns"
     local tmp iconset actool_out size name spec
 
+    # 1. Layered icon from the Icon Composer bundle. actool emits Assets.car
+    #    for macOS 26 appearances; the error is surfaced instead of swallowed so
+    #    a CI log says exactly why it did not run.
     if command -v actool >/dev/null 2>&1 && [ -d "$icon_dir" ]; then
         tmp="$(mktemp -d)"
-        if actool --compile "$tmp" \
-                --platform macosx \
-                --minimum-deployment-target 11.0 \
-                --output-partial-info-plist "$tmp/asset-info.plist" \
-                --app-icon "Aevan Icon" \
-                "$icon_dir" >/dev/null 2>&1; then
-            actool_out="$(find "$tmp" -name '*.icns' -print -quit)"
-            if [ -n "$actool_out" ] && cp "$actool_out" "$icns"; then
-                rm -rf "$tmp"
-                echo "icon: built AppIcon.icns with actool from 'Aevan Icon.icon'"
-                return 0
+        if actool --compile "$tmp"                 --platform macosx                 --minimum-deployment-target 11.0                 --output-partial-info-plist "$tmp/asset-info.plist"                 --app-icon "Aevan Icon"                 "$icon_dir" >"$tmp/actool.log" 2>&1; then
+            if [ -f "$tmp/Assets.car" ] && cp "$tmp/Assets.car" "$resources/Assets.car"; then
+                echo "icon: actool compiled the layered icon from 'Aevan Icon.icon' (Assets.car)"
+            else
+                echo "icon: actool ran but produced no Assets.car; see log" >&2
+                tail -3 "$tmp/actool.log" >&2 || true
             fi
+        else
+            echo "icon: actool failed on 'Aevan Icon.icon'; last lines:" >&2
+            tail -3 "$tmp/actool.log" >&2 || true
         fi
         rm -rf "$tmp"
-        echo "icon: actool could not produce AppIcon.icns; falling back to iconutil" >&2
+    else
+        echo "icon: actool or the Icon Composer bundle is unavailable; using the PNG master"
     fi
 
+    # 2. Flat .icns from the 1024 master. Always built: older macOS reads only
+    #    this, and it is the fallback when actool cannot compile the .icon.
     if ! command -v iconutil >/dev/null 2>&1; then
         echo "icon: iconutil is unavailable; building without an app icon" >&2
         return 1
