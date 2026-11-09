@@ -1,8 +1,6 @@
 cask "aevan" do
   version "0.2.5"
-  # Produced by the macOS CI job. Replace this placeholder with the published
-  # .dmg checksum before cutting a release; see docs/HOMEBREW.md.
-  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+  sha256 "12c4702234809c33a1942f1ef20c816cd7baecb784d915b8b87057cda46c3cc6"
 
   url "https://github.com/kilisk/Aevan/releases/download/v#{version}/aevan-#{version}-arm64%2Bx86_64.dmg"
   name "Aevan"
