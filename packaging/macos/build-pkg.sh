@@ -106,7 +106,9 @@ cp -R "$APP" "$DIST/Aevan.app"
 
 mkdir -p "$STAGE/usr/local/bin" \
          "$STAGE/usr/local/share/doc/aevan" \
-         "$STAGE/Library/LaunchDaemons"
+         "$STAGE/Library/LaunchDaemons" \
+         "$STAGE/Applications"
+cp -R "$DIST/Aevan.app" "$STAGE/Applications/Aevan.app"
 install -m 0755 "$BIN/aevan" "$STAGE/usr/local/bin/aevan"
 install -m 0755 "$BIN/aevand" "$STAGE/usr/local/bin/aevand"
 install -m 0755 "$ROOT/packaging/macos/uninstall.sh" \
@@ -121,6 +123,7 @@ pkgbuild --root "$STAGE" \
     --identifier com.github.kilisk.aevan \
     --version "$VERSION" \
     --install-location "/" \
+    --scripts "$ROOT/packaging/macos/scripts" \
     "$DIST/aevan-component.pkg"
 
 productbuild --package "$DIST/aevan-component.pkg" \

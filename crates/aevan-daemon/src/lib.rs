@@ -20,6 +20,7 @@ pub mod client;
 pub mod connector;
 pub mod elevate;
 pub mod journal;
+pub mod launchd;
 pub mod logs;
 pub mod pipe_security;
 pub mod protocol;

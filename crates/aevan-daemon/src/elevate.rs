@@ -30,6 +30,15 @@ pub fn start_elevated(executable: &Path, args: &[&str]) -> StartOutcome {
     imp::start_elevated(executable, args)
 }
 
+/// Run one shell command behind a single native administrator prompt.
+///
+/// macOS uses `osascript`; every other platform reports that this is
+/// unsupported. The command is expected to set a non-zero exit on failure so
+/// the platform reports [`StartOutcome::Failed`] with the tool's own message.
+pub fn run_script_elevated(script: &str) -> StartOutcome {
+    imp::run_script_elevated(script)
+}
+
 /// Start `executable` without a console and without waiting for it.
 pub fn spawn_detached(executable: &Path) -> std::io::Result<()> {
     imp::spawn_detached(executable)
@@ -168,6 +177,10 @@ mod imp {
             .spawn()
             .map(|_child| ())
     }
+
+    pub fn run_script_elevated(_script: &str) -> StartOutcome {
+        StartOutcome::Failed("administrator shell scripts are only implemented on macOS".into())
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -248,10 +261,13 @@ mod imp {
     }
 
     pub fn start_elevated(executable: &Path, args: &[&str]) -> StartOutcome {
-        let command = command_line(executable, args);
+        run_script_elevated(&command_line(executable, args))
+    }
+
+    pub fn run_script_elevated(command: &str) -> StartOutcome {
         let script = format!(
             "do shell script {} with administrator privileges",
-            apple_script_quote(&command)
+            apple_script_quote(command)
         );
 
         let output = match Command::new("/usr/bin/osascript")
@@ -261,10 +277,7 @@ mod imp {
         {
             Ok(output) => output,
             Err(error) => {
-                return StartOutcome::Failed(format!(
-                    "could not run osascript to start {}: {error}",
-                    executable.display()
-                ));
+                return StartOutcome::Failed(format!("could not run osascript: {error}"));
             }
         };
         if output.status.success() {
@@ -281,15 +294,11 @@ mod imp {
         } else {
             let detail = stderr.trim();
             if detail.is_empty() {
-                StartOutcome::Failed(format!(
-                    "macOS could not start {} with administrator privileges",
-                    executable.display()
-                ))
+                StartOutcome::Failed(
+                    "macOS refused the administrator command without a reason".into(),
+                )
             } else {
-                StartOutcome::Failed(format!(
-                    "macOS could not start {} with administrator privileges: {detail}",
-                    executable.display()
-                ))
+                StartOutcome::Failed(format!("macOS refused the administrator command: {detail}"))
             }
         }
     }
@@ -324,5 +333,9 @@ mod imp {
             .stderr(std::process::Stdio::null())
             .spawn()
             .map(|_child| ())
+    }
+
+    pub fn run_script_elevated(_script: &str) -> StartOutcome {
+        StartOutcome::Failed("administrator shell scripts are only implemented on macOS".into())
     }
 }

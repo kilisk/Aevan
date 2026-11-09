@@ -108,7 +108,10 @@ pub struct App {
 /// Run the native window.
 pub fn run(store: ProfileStore) -> iced::Result {
     let endpoint = daemon_bridge::endpoint();
-    let vm = ViewModel::new(&store, endpoint, now_unix());
+    let mut vm = ViewModel::new(&store, endpoint, now_unix());
+    // The macOS daemon is a keepalive system LaunchDaemon: Quit leaves it and
+    // any live tunnel alone, and Disconnect is the explicit stop action.
+    vm.leave_daemon_on_quit = cfg!(target_os = "macos");
 
     iced::application("Aevan", App::update, App::view)
         .subscription(App::subscription)
@@ -1308,7 +1311,12 @@ fn autostart_change_task(enabled: bool) -> Task<Message> {
 }
 
 /// Stop a daemon this GUI started, then exit.
+///
+/// macOS never stops the daemon here: it is a keepalive system LaunchDaemon
+/// and Quit must leave it (and any tunnel) alone. Disconnect is the explicit
+/// teardown action.
 fn finish_quit(shutdown_daemon: bool) -> Task<Message> {
+    let shutdown_daemon = shutdown_daemon && !cfg!(target_os = "macos");
     Task::perform(
         async move {
             if shutdown_daemon {

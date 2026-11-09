@@ -95,6 +95,10 @@ remove_path /Applications/Aevan.app
 remove_path /usr/local/bin/aevan
 remove_path /usr/local/bin/aevand
 remove_path /usr/local/bin/aevan-uninstall
+remove_path "/Library/Application Support/Aevan/aevan.sock"
+remove_path "/Library/Application Support/Aevan"
+remove_path /run/aevan/aevan.sock
+remove_path /run/aevan
 remove_path /var/run/aevan.sock
 
 for base in "$TARGET_HOME" /var/root; do

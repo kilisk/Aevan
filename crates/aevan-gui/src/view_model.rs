@@ -684,6 +684,9 @@ pub struct ViewModel {
     pending_notifications: Vec<TransitionNotification>,
     /// Whether this GUI process started the daemon (so Quit may stop it).
     pub started_daemon: bool,
+    /// Whether the daemon is a keepalive system service that Quit must leave
+    /// running (the macOS LaunchDaemon).
+    pub leave_daemon_on_quit: bool,
     /// Whether the explicit daemon-start action is in flight.
     pub daemon_start_busy: bool,
     /// Last known start-at-login state.
@@ -748,6 +751,7 @@ impl ViewModel {
             pending_totp_profile: None,
             pending_notifications: Vec::new(),
             started_daemon: false,
+            leave_daemon_on_quit: false,
             daemon_start_busy: false,
             autostart: AutostartState::Loading,
             autostart_busy: false,
@@ -1109,6 +1113,12 @@ impl ViewModel {
     /// needs confirmation because this GUI cannot prove the teardown finished.
     pub fn request_quit(&mut self) -> QuitPlan {
         self.quit_confirmation = None;
+        // A keepalive system daemon is not this GUI's to stop, and quitting
+        // must not tear down a live tunnel either; Disconnect is explicit.
+        if self.leave_daemon_on_quit {
+            self.quit_after_disconnect = false;
+            return QuitPlan::Exit;
+        }
         if self.can_disconnect() {
             let profile = self.begin_disconnect();
             self.quit_after_disconnect = true;

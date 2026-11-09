@@ -1,0 +1,17 @@
+#!/bin/sh
+# Bootstrap the Aevan LaunchDaemon once, as root, during package installation.
+set -eu
+
+PLIST="/Library/LaunchDaemons/com.github.kilisk.aevand.plist"
+LABEL="com.github.kilisk.aevand"
+
+if [ ! -f "$PLIST" ]; then
+    echo "aevan: $PLIST is missing; not starting the daemon" >&2
+    exit 0
+fi
+
+# A previous version may still be loaded. Replace it, then bootstrap once.
+/bin/launchctl bootout "system/$LABEL" 2>/dev/null || true
+/bin/launchctl bootstrap system "$PLIST" 2>/dev/null || /bin/launchctl load -w "$PLIST" || true
+
+exit 0

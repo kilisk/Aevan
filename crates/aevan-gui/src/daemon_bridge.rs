@@ -4,7 +4,7 @@
 //! never opens a TLS connection, reads a profile file itself or touches the
 //! adapter/routes/DNS.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use aevan_daemon::autostart::{self, TaskState};
@@ -99,19 +99,40 @@ pub fn remove_totp_secret(profile: &str) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
-/// Start `aevand.exe` beside this GUI with one UAC prompt, then wait for the
-/// control endpoint. Nothing is started silently: this is only called by the
-/// explicit "Start daemon (Administrator)" action.
+/// Start `aevand` beside this GUI, then wait for the control endpoint.
+///
+/// macOS installs the system LaunchDaemon once (one native prompt) and reuses
+/// it afterwards; Windows keeps the single UAC elevation. Nothing is started
+/// silently: this is only called by the explicit start action.
 pub fn start_daemon() -> Result<(), String> {
     let executable = daemon_binary()?;
-    match elevate::start_elevated(&executable, &[]) {
+    start_daemon_beside(&executable)
+}
+
+#[cfg(target_os = "macos")]
+fn start_daemon_beside(executable: &Path) -> Result<(), String> {
+    use aevan_daemon::launchd;
+
+    if client::request(&Request::status(), Some(STATUS_TIMEOUT)).is_ok() {
+        return Ok(());
+    }
+    if launchd::is_installed() {
+        launchd::kickstart()?;
+    } else {
+        launchd::install(executable)?;
+    }
+    client::wait_for_daemon(DAEMON_WAIT)
+        .map_err(|error| format!("the daemon did not answer within 10 seconds: {error}"))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn start_daemon_beside(executable: &Path) -> Result<(), String> {
+    match elevate::start_elevated(executable, &[]) {
         StartOutcome::Started => client::wait_for_daemon(DAEMON_WAIT)
             .map_err(|error| format!("the daemon did not answer within 10 seconds: {error}")),
-        StartOutcome::Cancelled => Err(if cfg!(target_os = "macos") {
-            "the daemon needs administrator approval; the prompt was dismissed".to_owned()
-        } else {
-            "the in-VPN daemon needs Administrator; the prompt was cancelled".to_owned()
-        }),
+        StartOutcome::Cancelled => {
+            Err("the in-VPN daemon needs Administrator; the prompt was cancelled".to_owned())
+        }
         StartOutcome::Failed(message) => Err(message),
     }
 }

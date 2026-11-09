@@ -26,6 +26,15 @@ shortcut does this). It ensures `aevand` is running — starting it with one UAC
 prompt if the control pipe is unavailable — then launches `aevan-gui` detached
 and returns. `aevan-gui` itself never starts the daemon silently.
 
+On macOS the `.pkg` installs the LaunchDaemon once and bootstraps it; a
+drag-installed app installs and bootstraps it from the **Start daemon
+(Administrator)** action. After that a reboot starts the root daemon with no
+prompt, and the GUI only prompts once in the app's lifetime. `aevand` binds the
+system endpoint when it runs as root (`/Library/Application Support/Aevan/
+aevan.sock`, mode 0666 in a 0755 root:wheel directory); clients try that path
+first and then the per-user `~/Library/Application Support/aevan/aevan.sock`.
+`aevan status` prints the endpoint that answered.
+
 ```sh
 cargo run -p aevan-gui
 cargo run -p aevan-gui -- --headless
@@ -71,9 +80,12 @@ The same menu exists on both platforms:
   for the selected profile and focuses the window.
 * **Disconnect** — disabled while disconnected; sends one `disconnect`.
 * **Show window** — focuses the existing window.
-* **Quit** — disconnects first, stops the daemon if this GUI started it, then
-  exits. If the disconnect fails, the window stays open and offers **Quit
-  anyway** or **Cancel**; a half-torn-down tunnel is never abandoned silently.
+* **Quit** — on Windows it disconnects first and stops the daemon if this GUI
+  started it. On macOS it only closes the GUI: `aevand` is a keepalive system
+  LaunchDaemon, so Quit leaves the daemon and any live tunnel alone. Use
+  **Disconnect** for the explicit teardown. If the disconnect fails on
+  Windows, the window stays open and offers **Quit anyway** or **Cancel**; a
+  half-torn-down tunnel is never abandoned silently.
 
 Closing the window with its close button only hides it. The tray icon (or the
 macOS menu-bar item) remains, the daemon keeps running and the tunnel keeps
@@ -150,11 +162,14 @@ notification is shown for a plain `disconnected` transition or for repeated
 * `Retry` performs one `status` probe. `Refresh` reloads `profiles.toml`.
 * When the daemon cannot be reached, the screen shows the control client's
   exact reach-failure message (not-listening, access-denied or
-  protocol-mismatch) and a **Start daemon (Administrator)** action. Pressing it
-  performs the same one-UAC-prompt start as the `aevan` launcher, then retries
-  `status` and clears the banner on success. If the prompt is cancelled the
-  message stays and the button can be pressed again; it is never looped
-  automatically.
+  protocol-mismatch) and a **Start daemon (Administrator)** action. On Windows
+  it performs the same one-UAC-prompt start as the `aevan` launcher. On macOS
+  it installs `/Library/LaunchDaemons/com.github.kilisk.aevand.plist` once
+  behind a single administrator prompt (or reuses the loaded job with
+  `launchctl kickstart`), then retries `status` and clears the banner on
+  success. osascript/launchctl failures are shown in the banner. If the prompt
+  is cancelled the message stays and the button can be pressed again; it is
+  never looped automatically.
 
 ### Connect sheet
 
