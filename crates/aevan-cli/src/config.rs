@@ -2,8 +2,8 @@
 //!
 //! With `--from-file` (or `-` for stdin) the command is completely offline and
 //! is the replay path for a saved binary KMP/TLV blob. With `--live` it performs
-//! exactly one authentication attempt, then probes the vendor NC launch path
-//! and the legacy oNCP entry in that single session. Without either, it reads
+//! exactly one authentication attempt, then probes the Network Connect launch
+//! path and the legacy oNCP entry in that single session. Without either, it reads
 //! the configuration cached by a successful `aevan login` in this process.
 //!
 //! NC configuration is binary oNCP, not a text body. A text file is rejected

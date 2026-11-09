@@ -2,7 +2,7 @@
 //!
 //! `/dana/js?prot=1&svc=4` is the legacy oNCP entry. On this gateway it
 //! redirects to the auth page instead of switching the TLS stream to binary
-//! KMP. The vendor client arms Network Connect through
+//! KMP. Network Connect is launched through
 //! `/dana/nc/ncrun.cgi?launch_nc=1`, so the live command probes that launch
 //! path and the other known endpoints in one authenticated session before it
 //! falls back to the legacy oNCP exchange.

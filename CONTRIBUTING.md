@@ -33,7 +33,7 @@ cargo test --workspace
 cargo build --release
 ```
 
-The suite currently reports **352 passing tests and 1 ignored test**. Do not
+The suite currently reports **365 passing tests and 1 ignored test**. Do not
 weaken or delete a test to get green; explain a platform skip in the PR.
 
 ## Authentication rule
@@ -53,7 +53,7 @@ fixture header whether it is synthetic.
 ## Protocol work
 
 Anchor every protocol change to documentation or the openly available reference
-implementation (for example openconnect, read for wire layout, with our own
+implementation (for example openconnect, consulted for wire layout, with our own
 code). Do not guess field meanings, magic numbers or fallback behaviour. If
 something is unknown, encode the uncertainty explicitly and add a test for the
 unknown case rather than inventing a value. Record the source you relied on in

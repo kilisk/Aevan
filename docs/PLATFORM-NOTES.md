@@ -12,7 +12,7 @@ implementer must know before M2.
 
 ## Split tunnel
 
-Only install the routes the gateway pushes (the observed gateway behaviour: `10/8` and the `172.30.x`
+Only install the routes the gateway pushes (typical split-tunnel routes are `10/8` and the `172.30.x`
 blocks). Never install a default route unless the gateway says so. Honour IPv6
 only when the gateway assigns an IPv6 address.
 

@@ -20,7 +20,7 @@ use aevan_proto::{
 /// Form content type used by the gateway.
 pub const FORM_CONTENT_TYPE: &str = "application/x-www-form-urlencoded";
 
-/// Value the vendor confirmation page submits for `btnContinue`.
+/// Value the gateway confirmation page submits for `btnContinue`.
 pub const CONTINUE_VALUE: &str = "Continue the session";
 
 const CONTINUATION_MARKER: &str = "user-confirm";
@@ -47,12 +47,12 @@ const SUCCESS_MARKERS: &[&str] = &[
     "successfully signed in",
 ];
 
-/// Per-attempt values the vendor login form needs besides the credentials.
+/// Per-attempt values the gateway login form needs besides the credentials.
 ///
-/// The vendor client builds its POST from both the credential triple and a
-/// handful of anti-cache/telemetry fields. Tests inject these explicitly so a
-/// body assertion can be deterministic; [`LoginContext::fresh`] is the live
-/// path.
+/// The reference implementation builds its POST from both the credential triple
+/// and a handful of anti-cache/telemetry fields. Tests inject these explicitly
+/// so a body assertion can be deterministic; [`LoginContext::fresh`] is the
+/// live path.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LoginContext {
     /// Fresh per-attempt `xsauth` nonce.
@@ -71,8 +71,8 @@ impl LoginContext {
     /// There is no direct RNG dependency in this crate and the workspace
     /// forbids adding one, so `xsauth` is derived from the nanosecond clock,
     /// the process id and a per-process counter. This is not a cryptographic
-    /// RNG; the vendor uses `xsauth` as a request/anti-cache nonce and the
-    /// gateway issues the actual session cookie. Callers that need a
+    /// RNG; the gateway's login form expects `xsauth` as a request/anti-cache
+    /// nonce, and the gateway issues the actual session cookie. Callers that need a
     /// deterministic body use [`LoginContext::new`] instead.
     pub fn fresh() -> Self {
         Self {
@@ -509,7 +509,7 @@ impl ContinuationRequest {
         }
 
         if confirmation {
-            // The vendor confirmation page answers with `btnContinue` plus its
+            // The gateway confirmation page answers with `btnContinue` plus its
             // hidden `FormDataStr`; `btnCancel` must not be submitted.
             let value = form
                 .inputs
@@ -1134,7 +1134,7 @@ mod tests {
     }
 
     #[test]
-    fn builds_the_vendor_credential_body_in_order() {
+    fn builds_the_credential_body_in_order() {
         let request = LoginRequest::from_form_with_context(
             &login_form(),
             &base(),

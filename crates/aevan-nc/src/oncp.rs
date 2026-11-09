@@ -1208,7 +1208,7 @@ pub fn handshake_live_session(
 
 /// Run the live oNCP handshake over an already connected byte stream.
 ///
-/// The first attempt uses the reference client's literal `Content-Length: 256`
+/// The first attempt uses the reference implementation's literal `Content-Length: 256`
 /// with a zero-padded hostname packet. That is the reference convention, and
 /// the real-length variant makes the gateway answer with status byte 1. If the
 /// fixed-256 attempt does not yield an HTTP 200 plus KMP 301, exactly one

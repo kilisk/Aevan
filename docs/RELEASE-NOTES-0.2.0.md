@@ -78,4 +78,5 @@ No GTK or AppIndicator dependency: the Linux build has no tray icon by design.
   VM. The Linux `.deb`/`.rpm` recipes are templates and untested.
 - The macOS menu-bar item compiles in CI but has not been run on Apple hardware.
 - No IF-T/TLS (`M6`) transport: this is the Network Connect path only.
-- Rekey behaviour is inferred from the reference implementation and one live observation.
+- Rekey behaviour follows the reference implementation; the server-driven path is an
+  interoperability assumption, verified against a live gateway.

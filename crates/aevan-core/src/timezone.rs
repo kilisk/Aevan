@@ -1,7 +1,7 @@
-//! Best-effort local UTC offset for the vendor login form's `tz_offset` field.
+//! Best-effort local UTC offset for the gateway login form's `tz_offset` field.
 //!
 //! `std::time` exposes UTC only, this workspace forbids `unsafe`, and no
-//! timezone crate is a dependency. The vendor form wants the offset in
+//! timezone crate is a dependency. The gateway form wants the offset in
 //! minutes, so this module asks the operating system once and caches the
 //! answer:
 //!

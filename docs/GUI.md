@@ -310,7 +310,7 @@ exactly as before.
   macOS/Linux keyring backends are still not enabled in this build, so TOTP
   enrolment reports "not enrolled" there.
 * **TOTP secret formats:** RFC 6238 SHA-1 / six digits / 30 seconds only, which
-  matches the vendor realm; other digits or periods are not configurable.
+  matches the gateway realm; other digits or periods are not configurable.
 * **One tunnel:** like the daemon, the GUI shows one profile/tunnel at a time.
 * **Route detail:** the connected view shows the applied route count because the
   control `status` document exposes a count, not the route list.

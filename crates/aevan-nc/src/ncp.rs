@@ -1020,13 +1020,13 @@ fn looks_like_text(input: &[u8]) -> bool {
 mod tests {
     use super::*;
 
-    // SYNTHETIC FIXTURE — built from observed values plus a synthetic ESP key
-    // block, not a captured gateway response. The blob also carries an
+    // SYNTHETIC FIXTURE — built from representative values plus a synthetic ESP
+    // key block, not a recorded gateway response. The blob also carries an
     // unknown group 0xFFFF attribute whose value is the honest fixture note.
     const CONFIG: &[u8] = include_bytes!("../tests/fixtures/ncp-config-kmp.bin");
 
     #[test]
-    fn decodes_the_synthetic_e13_fixture() {
+    fn decodes_the_synthetic_fixture() {
         let config = NcpConfig::parse_binary(CONFIG).expect("parse");
 
         let ipv4 = config.ipv4.as_ref().expect("ipv4");

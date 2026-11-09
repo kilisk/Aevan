@@ -10,7 +10,7 @@ use sha1::Sha1;
 
 use crate::store::Secret;
 
-/// Digits used by the vendor realm and the CLI default.
+/// Digits used by the gateway realm and the CLI default.
 pub const DEFAULT_DIGITS: u32 = 6;
 /// Time step in seconds.
 pub const DEFAULT_PERIOD: u64 = 30;

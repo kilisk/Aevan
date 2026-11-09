@@ -195,7 +195,7 @@ The blocking connector worker runs the ESP loop described in
 [`docs/CONNECT.md`](CONNECT.md#data-plane): a non-blocking UDP socket,
 non-blocking Wintun reads, batched drains in both directions, reusable packet
 buffers, and a bounded 50 ms event wait over the socket and the Wintun read
-event when the tunnel is idle. A disconnect sets the stop flag and is observed
+event when the tunnel is idle. A disconnect sets the stop flag and is noticed
 within that bounded wait.
 
 ## Single-attempt guard

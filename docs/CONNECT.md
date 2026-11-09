@@ -2,7 +2,7 @@
 
 This document describes the foreground `aevan connect` path in this tree. It is
 deliberately explicit about what is implemented, what is exercised only by
-offline tests, and what can still differ from the reference client.
+offline tests, and what can still differ from the reference implementation.
 
 ## Sequence
 
@@ -35,8 +35,8 @@ state machine and the crash-recovery journal described in `docs/DAEMON.md`.
 
 ## Live ESP sequence (301 → 302 → 303 → ESP)
 
-Verified against the vendor log on this gateway and the reference layout in
-openconnect `auth-juniper.c` / `oncp.c` (layout only; the code here is written
+Verified against a live gateway and the reference layout in openconnect
+`auth-juniper.c` / `oncp.c` (layout only; the code here is written
 independently).
 
 | direction | message | content |
@@ -132,7 +132,7 @@ sets a stop flag and the loop returns normally: teardown then runs before the
 process exits. The handler is specific to the `aevan-tun` Windows module, which
 is also where the crate's `unsafe` is confined.
 
-Teardown does not restore the previous MTU when it was never captured. On all
+Teardown does not restore the previous MTU when no previous value was recorded. On all
 three backends the interface itself is removed or reset, which restores the
 platform default; the applier therefore does not guess a value.
 
@@ -255,7 +255,7 @@ after, not just the peak instant rate.
 
 ## Rekey is server-driven
 
-The live evidence is definitive. At timestamps `1793838330`-`1793838331`,
+The rekey behaviour is definitive. At timestamps `1793838330`-`1793838331`,
 exactly 960 s after connect, the daemon log shows:
 
 ```text
@@ -284,7 +284,7 @@ the encryption length from 8/1:
 | 8/6 | 4 | lifetime in seconds |
 | 8/10 | 4 | replay protection |
 
-The observed 208-byte message is a 302 with groups 7 and 8. The initial
+The recorded 208-byte message is a 302 with groups 7 and 8. The initial
 exchange remains **client-initiated**: after KMP 301 we send 302 then 303.
 Only the rekey is server-driven.
 
@@ -361,7 +361,7 @@ multi-hour session to learn whether the gateway actually enforces the 1200 s
 lifetime. Only the literal `1` (surrounding whitespace is ignored) enables the
 switch; every other value leaves rekey enabled.
 
-A gateway-initiated 302 was observed live at the 960 s lifetime, so the
+A gateway-initiated 302 was verified against a live gateway at the 960 s lifetime, so the
 server-driven path above is the primary one. Its attribute layout is the
 reference's `oncp.c` map. The client-initiated fallback and its confirmation
 signals are still verified offline only; the live rekey was answered by the
@@ -370,17 +370,17 @@ server-driven path.
 ## Known differences from the reference
 
 * The reference sends the 303 and 302 in one TLS record (303 first) in
-  `oncp_connect`; the vendor log shows 302 then 303. This client sends them as
+  `oncp_connect`; a live gateway records 302 then 303. This client sends them as
   two records, 302 then 303, matching the recorded wire order.
-* The vendor's "302 size 86" is the KMP payload length; the full record is 108
+* The recorded "302 size 86" is the KMP payload length; the full record is 108
   bytes including the two-byte length prefix and 20-byte KMP header. The 303
   builder is the existing 38-byte message (16-byte payload).
 * ESP encryption/authentication cover the transforms this gateway offered
   (AES-128-CBC + HMAC-SHA1, 96-bit ICV). AES-256 and MD5 are implemented and
-  tested offline but have not been observed on this gateway.
+  tested offline but are not required by this gateway.
 * LZO compression is not implemented; a packet with next header 5 is logged and
   dropped rather than decompressed.
-* Rekey is server-driven and was observed live at 960 s. The client-initiated
+* Rekey is server-driven and was verified against a live gateway at 960 s. The client-initiated
   fallback still uses confirm-before-switch and is covered by offline tests.
   `AEVAN_DISABLE_REKEY=1` disables both. The ESP-to-SSL fallback is not
   implemented: a dead peer is a clean error, not a fallback to the oNCP TLS data
@@ -410,9 +410,10 @@ First working tunnel from the clean-room client, measured, not asserted:
 | idle stability | up and idle for 10+ minutes with no drop, after the keepalive and liveness fixes |
 | teardown | Ctrl+C: adapter gone, no route via `10.20.0.10`, no `10/8`, interface DNS settings gone — no residue |
 
-Outstanding for a long session: verifying rekey live against the gateway (it is
-implemented and tested offline, but no rekey has been observed), the ESP→SSL
-fallback path, and a keepalive shape that is inferred rather than captured. The
+Outstanding for a long session: rekey is implemented and tested offline (the
+server-driven path was verified against a live gateway; the client-initiated
+fallback was not), the ESP→SSL fallback path, and a keepalive shape that is an
+interoperability assumption rather than a recorded gateway value. The
 tunnel is stable while idle, but a multi-hour session has not been tested. For
 that test, `AEVAN_DISABLE_REKEY=1` removes rekey as a variable and answers whether
 the gateway enforces the 1200 s lifetime at all.

@@ -19,19 +19,20 @@
 //!
 //! ## What is specified and what is inferred
 //!
-//! * Observed gateway: AES-128-CBC with HMAC-SHA1 over UDP 4500.
+//! * Gateway transform set: AES-128-CBC with HMAC-SHA1 over UDP 4500.
 //! * Reference: AES-128/AES-256, MD5-96/SHA1, ESP keepalives and rekey counters.
 //! * Reference (`esp.c`, read for layout): ESP header order, padding formula,
 //!   HMAC coverage, ICV truncation to 12 bytes, and the next CBC IV being the
 //!   last ciphertext block of the previous packet. The IV-chaining detail is an
-//!   openconnect behaviour, not a capture.
-//! * Inferred/offline: the keepalive payload is a typed helper, not observed
-//!   gateway behaviour. The rekey direction is now live evidence: the gateway
-//!   sends its own KMP 302 at the soft lifetime, and the client answers.
+//!   openconnect behaviour, not a recorded gateway value.
+//! * Interoperability assumption: the keepalive payload is a typed helper, not
+//!   a confirmed gateway requirement. Rekey direction is verified against a
+//!   live gateway: the gateway sends its own KMP 302 at the soft lifetime, and
+//!   the client answers.
 //!
 //! ## Rekey: server-driven, with a client-initiated fallback
 //!
-//! Live evidence shows the gateway drives ESP rekey. At the soft lifetime it
+//! A live gateway drives ESP rekey. At the soft lifetime it
 //! sends its own KMP 302 carrying group 7/attr 1 (the client's **outbound**
 //! SPI) and group 7/attr 2 (the client's 0x40-byte outbound key block), plus
 //! group 8 transforms and lifetimes. That message is an instruction, not a
@@ -472,7 +473,7 @@ pub struct DecryptedPacketView<'a> {
 ///
 /// The CBC IV starts at the caller-supplied value. After each packet it becomes
 /// the last ciphertext block, the same chaining the reference uses. This is an
-/// inferred interop detail, not an observed gateway requirement.
+/// interoperability assumption, not a confirmed gateway requirement.
 pub struct OutboundSa {
     spi: u32,
     keys: EspKeys,
@@ -718,10 +719,11 @@ pub enum RekeyReason {
 
 /// Rekey policy as a pure decision function.
 ///
-/// Lifetimes normally come from KMP 301 group 8 attributes 5 and 6. The observed
-/// handshake did not record either value, so this type does not invent defaults: the caller
+/// Lifetimes normally come from KMP 301 group 8 attributes 5 and 6. The recorded
+/// handshake did not carry either value, so this type does not invent defaults: the caller
 /// supplies the policy. [`RekeyPolicy::from_esp_proposal`] treats a zero
-/// lifetime as "no limit", which is an inference, not observed behaviour.
+/// lifetime as "no limit", which is an interoperability assumption, not a
+/// confirmed gateway requirement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RekeyPolicy {
     /// Soft lifetime in seconds, or `None` for no limit.

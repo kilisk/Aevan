@@ -117,8 +117,8 @@ impl Form {
 
     /// Whether this form is the secondary-token challenge.
     ///
-    /// The observed vendor markers are the form name `frmTotpToken` and the
-    /// input name `password#2`. A `totp` fragment in an input name is accepted
+    /// The gateway's token-page markers are the form name `frmTotpToken` and
+    /// the input name `password#2`. A `totp` fragment in an input name is accepted
     /// as a third spelling. A CSRF field merely called `token` is not treated
     /// as the challenge, to avoid classifying an ordinary login page as a token
     /// page.

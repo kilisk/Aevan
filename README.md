@@ -1,12 +1,14 @@
 # Aevan
 
-**Aevan** is an unofficial, clean-room Rust client for Ivanti Secure Access
-gateways that speak the **Network Connect (NC)** protocol. It is not a wrapper
-around the vendor client and contains no vendor code, binaries or strings.
+**Aevan** is an independent, clean-room Rust implementation of a client for
+Ivanti Secure Access gateways that speak the **Network Connect (NC)** protocol.
+It is not a wrapper around any proprietary client and contains no code,
+binaries, configuration or session data from Ivanti or any other vendor.
 
 The binaries are `aevan` (CLI), `aevand` (privileged tunnel daemon) and
 `aevan-gui` (native tray GUI). The crates, control pipe, scheduled task,
-systemd unit and state directories all use the `aevan`/`Aevan` names.
+systemd unit and state directories all use the `aevan`/`Aevan` names. The wire
+protocol is described in [docs/PROTOCOL.md](docs/PROTOCOL.md).
 
 ## What works
 
@@ -27,18 +29,27 @@ systemd unit and state directories all use the `aevan`/`Aevan` names.
   implemented; gateways that require the pulse path are out of scope.
 - **No code signing.** Binaries and packages are unsigned, so Windows
   SmartScreen and macOS Gatekeeper will warn. See [SECURITY.md](SECURITY.md).
-- **No vendor support.** This is an independent project; do not ask Ivanti for
-  help with it.
+- **No commercial support.** This is an independent project; do not ask Ivanti
+  for help with it.
 
-## Disclaimer
+## Provenance and legal
 
-Aevan is not affiliated with, endorsed by, or supported by Ivanti, Inc. or any
-of its subsidiaries. "Ivanti", "Secure Access" and "Network Connect" are
-trademarks of their respective owners and are used here only to describe
-interoperability. Using an unofficial client against a corporate gateway may
-violate your employer's acceptable-use or security policy, and could be blocked
-or detected by the gateway's host-checking features. Check with your
-administrator before using it.
+- Aevan is an independent, clean-room Rust implementation. The repository
+  contains no code, binaries, configuration or session data from Ivanti or any
+  other vendor.
+- The protocol was implemented from public documentation, the gateway's
+  publicly visible HTTP endpoints and form fields, the relevant RFCs (RFC 4303
+  for ESP, together with RFC 2403, RFC 2404, RFC 3602 and RFC 2202 for the
+  transforms and test vectors) and the open-source openconnect project, which is
+  the reference client for these gateways.
+- "Ivanti", "Pulse Secure" and "Secure Access" are trademarks of their
+  respective owners; this project is not affiliated with, endorsed by, or
+  supported by them.
+- Aevan is provided as-is under the dual MIT/Apache-2.0 licence, with no
+  warranty. You are responsible for complying with your employer's or
+  provider's acceptable-use policy. Using an unofficial client against a
+  corporate gateway may be blocked or detected by the gateway's host-checking
+  features; check with your administrator before using it.
 
 ## Install
 

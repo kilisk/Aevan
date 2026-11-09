@@ -2,7 +2,7 @@
 //! IF-T/TLS (Pulse) transport — optional research track, **M6**.
 //!
 //! This crate is a stub behind the non-default `ift` feature. The live gateway
-//! rejects a non-vendor IFT handshake before
+//! rejects a non-native IFT handshake before
 //! any credential is sent, so NC is the only critical-path transport.
 //!
 //! Enable with `cargo build -p aevan-ift --features ift` when M6 starts.

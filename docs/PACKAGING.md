@@ -120,16 +120,15 @@ wix build -arch x64 -d Version=0.2.0 -d BinDir=target/release ^
 The zip is written with PowerShell `Compress-Archive`. Both recipes print the
 artifact paths and their SHA-256 sums.
 
-To inspect the MSI without installing it:
+To inspect the MSI without installing it, use WiX's MSI export and validation
+commands (see `wix msi --help` for the table and source export subcommands):
 
 ```bat
-wix msi decompile -o target/dist/aevan-decompiled.wxs target/dist/aevan-0.2.0-x64.msi
-wix msi decompile -data -o target/dist/aevan-data.xml target/dist/aevan-0.2.0-x64.msi
 wix msi validate target/dist/aevan-0.2.0-x64.msi
 ```
 
-`-data` writes a zip whose `wix-wid.xml` contains the File table. The current
-build has these File rows:
+The table export writes a zip whose `wix-wid.xml` contains the File table. The
+current build has these File rows:
 
 | File | Component |
 | --- | --- |

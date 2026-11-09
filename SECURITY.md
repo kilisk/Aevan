@@ -24,7 +24,7 @@ in the issue.
 - The packaging and install scripts in `packaging/` and `scripts/`.
 - Handling of credentials, cookies, key material and profile data.
 
-Out of scope: the vendor's client, the gateway itself, and problems that require
+Out of scope: the official client, the gateway itself, and problems that require
 an already-compromised machine or physical access.
 
 ## Credentials and profile data

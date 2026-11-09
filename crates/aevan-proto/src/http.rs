@@ -74,7 +74,7 @@ impl HttpResponse {
 
     /// Whether the HTML contains a `realm` form field.
     ///
-    /// Accepts the common attribute spellings emitted by the vendor login page
+    /// Accepts the common attribute spellings emitted by the gateway login page
     /// (`name="realm"`, `name='realm'`, unquoted, or an `id`).
     pub fn has_realm_field(&self) -> bool {
         let text = self.body_text().to_ascii_lowercase();
