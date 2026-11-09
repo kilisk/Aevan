@@ -3,13 +3,13 @@
 //!
 //! The [`Device`] surface is fixed. This crate ships the trait,
 //! a no-op backend for tests and a reverted-change stack that is idempotent and
-//! also runs from [`Drop`]. The real per-OS backends (Wintun, `utun`,
-//! `/dev/net/tun`) are M2: [`platform`] exposes typed [`TunError::Unsupported`]
-//! stubs and an honest availability probe.
+//! also runs from [`Drop`]. The per-OS backends are real: Wintun on Windows,
+//! `utun` on macOS and `/dev/net/tun` on Linux. [`platform`] also exposes an
+//! honest availability probe; macOS and Linux need root to create a device.
 //!
-//! This crate is the only place where platform code will need `unsafe` in a
-//! later milestone. The shared code below denies it; the per-OS modules opt out
-//! explicitly so the M2 implementations can make that decision locally.
+//! This crate is the only place where platform code uses `unsafe`. The shared
+//! code below denies it; the per-OS modules opt out explicitly so the raw
+//! kernel interfaces stay confined to one file per platform.
 
 pub mod apply;
 pub mod command;

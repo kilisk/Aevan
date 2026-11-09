@@ -1,14 +1,19 @@
 # Platform notes
 
-The table is the design notes §5, with the M0 status and the constraints that make
-each row non-trivial. Nothing below changes the contract; it records what the
-implementer must know before M2.
+The table is the design notes §5, with the current device status and the
+constraints that make each row non-trivial. Nothing below changes the contract.
 
-| OS | device | privileges | DNS | routes | M0 status |
+| OS | device | privileges | DNS | routes | Device status |
 |---|---|---|---|---|---|
-| Windows 10/11 | Wintun (`wintun.dll` shipped beside the exe, signed by WireGuard LLC, redistribution allowed) | adapter creation needs admin, so a small signed helper service runs as LocalSystem; the CLI/GUI talks to it over a named pipe | `SetInterfaceDnsSettings` / NRPT for split DNS | `CreateIpForwardEntry2`, route table v2 | `platform::probe` looks for `wintun.dll` beside the exe or in `System32`; `open` returns typed `Unsupported` |
-| macOS 12+ | `utun` via `socket(PF_SYSTEM)` | needs root or a privileged launchd helper. NetworkExtension/App Store "VPN" integration is out of scope (needs an Apple entitlement) | `networksetup` on the primary network service (`route -n get default` → `networksetup -listnetworkserviceorder`, first enabled service as fallback); previous servers and service name recorded and restored. Interface-wide only: the gateway pushes servers without search domains, so per-domain split DNS is not available | `route -n add` over the `utun` | `platform::probe` reports the M2 deferral; `open` returns typed `Unsupported` |
-| Linux | `/dev/net/tun` | `CAP_NET_ADMIN` or a systemd service + polkit | manager-dependent, selected at apply time: `resolvectl dns/domain` (systemd-resolved), then `resolvconf`, then an `/etc/resolv.conf` backup fallback; the choice is journaled so revert uses the same mechanism | netlink via the `rtnetlink` crate | `platform::probe` checks for `/dev/net/tun`; `open` returns typed `Unsupported` |
+| Windows 10/11 | Wintun (`wintun.dll` shipped beside the exe, signed by WireGuard LLC, redistribution allowed) | adapter creation needs admin, so a small signed helper service runs as LocalSystem; the CLI/GUI talks to it over a named pipe | `SetInterfaceDnsSettings` / NRPT for split DNS | `CreateIpForwardEntry2`, route table v2 | Implemented. `platform::probe` looks for `wintun.dll` beside the exe or in `System32`; `open` creates the adapter and returns the read-wait event |
+| macOS 12+ | `utun` via `socket(PF_SYSTEM)` | needs root or a privileged launchd helper. NetworkExtension/App Store "VPN" integration is out of scope (needs an Apple entitlement) | `networksetup` on the primary network service (`route -n get default` → `networksetup -listnetworkserviceorder`, first enabled service as fallback); previous servers and service name recorded and restored. Interface-wide only: the gateway pushes servers without search domains, so per-domain split DNS is not available | `route -n add` over the `utun` | Implemented. `platform::probe` reports the kernel `utun` control and whether root is held; `open` needs root and returns a typed `Permission` otherwise. Packets carry a 4-byte address-family header that the device strips/prepends |
+| Linux | `/dev/net/tun` | `CAP_NET_ADMIN` or a systemd service + polkit | manager-dependent, selected at apply time: `resolvectl dns/domain` (systemd-resolved), then `resolvconf`, then an `/etc/resolv.conf` backup fallback; the choice is journaled so revert uses the same mechanism | netlink via the `rtnetlink` crate | Implemented. `platform::probe` checks for `/dev/net/tun` and whether root is held; `open` needs root/`CAP_NET_ADMIN` and returns a typed `Permission` otherwise. `IFF_NO_PI` means raw IP packets |
+
+Device creation is proven by `crates/aevan-tun/examples/tun_smoke.rs`, which CI
+builds and runs under `sudo` on Ubuntu and macOS. It opens a device, prints the
+kernel-assigned name and wait handle, sends nothing, and closes. A full tunnel
+(handshake, ESP traffic, route/DNS application and teardown) on macOS and Linux
+still needs a human on real hardware; CI proves the device layer only.
 
 ## DNS per platform
 

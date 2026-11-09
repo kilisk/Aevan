@@ -56,11 +56,11 @@ protocol is described in [docs/PROTOCOL.md](docs/PROTOCOL.md).
 
 | Platform | Status |
 |---|---|
-| **Windows 10/11** | Complete: login, oNCP handshake, ESP tunnel, daemon, tray GUI, installers |
-| **macOS** | Builds, installs, runs the CLI, daemon and GUI, and can sign in and complete the handshake. **The `utun` backend is not implemented, so `aevan connect` fails with a typed "unsupported" error and no tunnel is created.** Nothing on the machine's network is touched. |
-| **Linux** | Same as macOS: the `tun` backend is not implemented yet, so no tunnel. Packaging (tarball, `.deb`, `.rpm`) exists for the CLI/daemon/GUI once that backend lands. |
+| **Windows 10/11** | Complete and live-verified: login, oNCP handshake, ESP tunnel, daemon, tray GUI, installers |
+| **macOS** | The `utun` device backend is implemented and requires root (`sudo`). It builds, installs, runs the CLI, daemon and GUI, and the full route/MTU/DNS appliers exist. CI opens a real `utun` device under `sudo` with `crates/aevan-tun/examples/tun_smoke.rs`; **a full live tunnel still needs a human on macOS hardware.** |
+| **Linux** | The `/dev/net/tun` device backend is implemented and requires root or `CAP_NET_ADMIN`. Packaging (tarball, `.deb`, `.rpm`) exists, and CI opens a real TUN device under `sudo` with the same smoke example. **A full live tunnel still needs a human on Linux hardware.** |
 
-Only the Windows data plane is functional today; the macOS and Linux backends are the next planned work.
+The device layer is real on all three platforms. Only the Windows data plane has been exercised end to end; macOS and Linux device creation is live-verified in CI, but their full tunnel path (handshake, ESP traffic, apply, teardown) is still a human check.
 
 ## Install
 
