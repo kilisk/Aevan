@@ -230,7 +230,7 @@ rpm: dist-linux
     mkdir -p "$top/SOURCES" "$top/SPECS" "$top/BUILD" "$top/RPMS" "$top/SRPMS"; \
     cp {{linux_tar}} "$top/SOURCES/"; \
     sed 's/@VERSION@/{{version}}/g' packaging/linux/aevan.spec > "$top/SPECS/aevan.spec"; \
-    rpmbuild --define "_topdir $top" -bb "$top/SPECS/aevan.spec"; \
+    rpmbuild --define "_topdir $top" --define "dist %{nil}" -bb "$top/SPECS/aevan.spec"; \
     cp "$top/RPMS/x86_64/aevan-{{version}}-1"*.rpm {{rpm_pkg}}
     @echo ""
     @echo "artifact:"
