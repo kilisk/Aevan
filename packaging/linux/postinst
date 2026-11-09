@@ -1,0 +1,10 @@
+#!/bin/sh
+set -e
+
+# Refresh systemd's view of the installed unit. The service is deliberately
+# not enabled or started: enabling aevand remains an explicit operator action.
+if command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload || true
+fi
+
+exit 0

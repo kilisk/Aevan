@@ -3,11 +3,13 @@ Version: @VERSION@
 Section: net
 Priority: optional
 Architecture: amd64
-Maintainer: aevan contributors <noreply@example.invalid>
-Depends: ca-certificates
-Description: Ivanti Secure Access client replacement
- aevan is a small CLI, daemon and GUI for Ivanti Secure Access gateways.
+Maintainer: aevan contributors <kilisk@users.noreply.github.com>
+Homepage: https://github.com/kilisk/aevan
+Depends: libc6, hicolor-icon-theme, systemd
+Description: independent Ivanti Secure Access (Network Connect) client
+ aevan is a clean-room command-line client, privileged daemon and GUI for
+ Ivanti Secure Access gateways that speak the Network Connect protocol.
  .
- This package is a skeleton. It has not been install-tested and its runtime
- dependency list is incomplete; build it with `just deb` on a Debian host and
- review it before distributing it.
+ The package installs aevan, aevand, aevan-gui, a systemd unit, a desktop entry
+ and hicolor icons. The aevand.service unit is installed but deliberately not
+ enabled or started; see /usr/share/doc/aevan/README.

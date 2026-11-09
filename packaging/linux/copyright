@@ -1,0 +1,13 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: aevan
+Upstream-Contact: aevan contributors <kilisk@users.noreply.github.com>
+Source: https://github.com/kilisk/aevan
+
+Files: *
+Copyright: 2026 aevan contributors
+License: MIT or Apache-2.0
+ This software is dual-licensed under the MIT licence or the Apache License,
+ Version 2.0, at your option.
+ .
+ On Debian systems the complete licence texts are installed in
+ /usr/share/doc/aevan/LICENSE-MIT and /usr/share/doc/aevan/LICENSE-APACHE.

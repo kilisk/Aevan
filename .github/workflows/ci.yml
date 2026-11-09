@@ -184,9 +184,32 @@ jobs:
       - name: Build Linux tarball
         run: just dist-linux
 
-      - name: Upload Linux artifact
+      - name: Build Debian package
+        run: just deb
+
+      - name: Inspect Debian package
+        run: |
+          set -euo pipefail
+          deb="$(ls target/dist/aevan_*_amd64.deb)"
+          dpkg-deb --info "$deb"
+          dpkg-deb --contents "$deb"
+          for path in \
+            ./usr/bin/aevan ./usr/bin/aevand ./usr/bin/aevan-gui \
+            ./lib/systemd/system/aevand.service \
+            ./usr/share/applications/aevan.desktop \
+            ./usr/share/icons/hicolor/64x64/apps/aevan.png \
+            ./usr/share/icons/hicolor/128x128/apps/aevan.png \
+            ./usr/share/icons/hicolor/256x256/apps/aevan.png \
+            ./usr/share/icons/hicolor/512x512/apps/aevan.png \
+            ./usr/share/doc/aevan/README ./usr/share/doc/aevan/copyright; do
+            dpkg-deb --contents "$deb" | grep -Fq "$path"
+          done
+
+      - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
         with:
           name: aevan-linux-x64
-          path: target/dist/*.tar.gz
+          path: |
+            target/dist/*.tar.gz
+            target/dist/*.deb
           if-no-files-found: error

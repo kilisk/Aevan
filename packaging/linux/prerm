@@ -1,0 +1,12 @@
+#!/bin/sh
+set -e
+
+# Stop a running daemon only if the administrator enabled the unit. The unit
+# itself is not disabled here; package removal deletes it afterwards.
+if command -v systemctl >/dev/null 2>&1; then
+    if systemctl is-enabled --quiet aevand.service 2>/dev/null; then
+        systemctl stop aevand.service || true
+    fi
+fi
+
+exit 0

@@ -11,6 +11,7 @@ dist_dir := "target/dist"
 msi := dist_dir + "/aevan-" + version + "-x64.msi"
 portable_zip := dist_dir + "/aevan-" + version + "-x64.zip"
 linux_tar := dist_dir + "/aevan-" + version + "-x86_64-linux.tar.gz"
+deb_pkg := dist_dir + "/aevan_" + version + "_amd64.deb"
 macos_pkg := dist_dir + "/aevan-" + version + "-arm64+x86_64.pkg"
 universal_dir := "target/universal/release"
 
@@ -166,23 +167,48 @@ dist-macos:
         shasum -a 256 {{macos_pkg}}; \
     fi
 
-# Debian skeleton. UNTESTED: no dpkg-deb on the Windows build host; CI does not
-# build this package yet. It exists so the metadata can be reviewed and the
-# same version substitution is used.
-deb: dist-linux
+# Debian package built with dpkg-deb alone (no debhelper). The unit is
+# installed but never enabled or started by the package; postinst only runs
+# daemon-reload and prerm stops an already-enabled unit.
+deb: build
+    @if [ "{{os()}}" != "linux" ]; then \
+        echo "error: deb must run on Linux (it packages ELF binaries)" >&2; \
+        exit 1; \
+    fi
     @command -v dpkg-deb >/dev/null 2>&1 || { \
-        echo "error: dpkg-deb is not installed; the .deb recipe is an untested skeleton" >&2; \
+        echo "error: dpkg-deb is not installed; install the dpkg package" >&2; \
         exit 1; \
     }
-    @stage="{{dist_dir}}/deb/aevan-{{version}}"; \
+    @stage="{{dist_dir}}/deb/aevan_{{version}}_amd64"; \
     rm -rf "$stage"; \
-    mkdir -p "$stage/DEBIAN" "$stage/usr/bin" "$stage/usr/share/doc/aevan"; \
+    mkdir -p "$stage/DEBIAN" \
+             "$stage/usr/bin" \
+             "$stage/lib/systemd/system" \
+             "$stage/usr/share/applications" \
+             "$stage/usr/share/doc/aevan" \
+             "$stage/usr/share/icons/hicolor/64x64/apps" \
+             "$stage/usr/share/icons/hicolor/128x128/apps" \
+             "$stage/usr/share/icons/hicolor/256x256/apps" \
+             "$stage/usr/share/icons/hicolor/512x512/apps"; \
     sed 's/@VERSION@/{{version}}/g' packaging/linux/control.in > "$stage/DEBIAN/control"; \
-    cp {{bin_dir}}/aevan {{bin_dir}}/aevand {{bin_dir}}/aevan-gui "$stage/usr/bin/"; \
-    cp README.md LICENSE LICENSE-APACHE LICENSE-MIT packaging/legal/LICENSE-WINTUN.txt "$stage/usr/share/doc/aevan/"; \
-    dpkg-deb --build --root-owner-group "$stage" "{{dist_dir}}/aevan_{{version}}_amd64.deb"
-    @ls -lh {{dist_dir}}/aevan_{{version}}_amd64.deb
-    @sha256sum {{dist_dir}}/aevan_{{version}}_amd64.deb
+    cp packaging/linux/postinst packaging/linux/prerm "$stage/DEBIAN/"; \
+    chmod 0755 "$stage/DEBIAN/postinst" "$stage/DEBIAN/prerm"; \
+    install -m 0755 {{bin_dir}}/aevan {{bin_dir}}/aevand {{bin_dir}}/aevan-gui "$stage/usr/bin/"; \
+    install -m 0644 packaging/linux/aevand.service "$stage/lib/systemd/system/aevand.service"; \
+    install -m 0644 packaging/linux/aevan.desktop "$stage/usr/share/applications/aevan.desktop"; \
+    install -m 0644 assets/branding/Aevan-64.png "$stage/usr/share/icons/hicolor/64x64/apps/aevan.png"; \
+    install -m 0644 assets/branding/Aevan-128.png "$stage/usr/share/icons/hicolor/128x128/apps/aevan.png"; \
+    install -m 0644 assets/branding/Aevan-256.png "$stage/usr/share/icons/hicolor/256x256/apps/aevan.png"; \
+    install -m 0644 assets/branding/Aevan-512.png "$stage/usr/share/icons/hicolor/512x512/apps/aevan.png"; \
+    install -m 0644 README.md "$stage/usr/share/doc/aevan/README"; \
+    install -m 0644 packaging/linux/copyright "$stage/usr/share/doc/aevan/copyright"; \
+    install -m 0644 LICENSE LICENSE-APACHE LICENSE-MIT "$stage/usr/share/doc/aevan/"; \
+    dpkg-deb --build --root-owner-group "$stage" {{deb_pkg}}
+    @echo ""
+    @echo "artifact:"
+    @ls -lh {{deb_pkg}}
+    @echo ""
+    sha256sum {{deb_pkg}}
 
 # RPM skeleton. UNTESTED: no rpmbuild on the Windows build host; CI does not
 # build this package yet.
