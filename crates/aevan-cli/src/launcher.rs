@@ -22,6 +22,8 @@ use aevan_daemon::Request;
 /// How the launcher tried to provide `aevand`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DaemonStatus {
+    /// A running GUI was asked to show itself; the daemon was not inspected.
+    Skipped,
     /// The control endpoint answered; nothing was started.
     AlreadyRunning,
     /// The elevated start was accepted and the endpoint answered.
@@ -43,6 +45,8 @@ pub struct LaunchSummary {
     pub daemon: DaemonStatus,
     /// Whether `aevan-gui` was spawned successfully.
     pub gui_launched: bool,
+    /// Whether an already-running GUI was asked to show its window instead.
+    pub gui_focused: bool,
     /// One line per non-fatal notice, in the order they should be printed.
     pub notices: Vec<String>,
     /// A fatal message when the GUI could not be found or started.
@@ -51,9 +55,9 @@ pub struct LaunchSummary {
 
 #[cfg(test)]
 impl LaunchSummary {
-    /// The process exit code: success once the GUI was launched.
+    /// The process exit code: success once the GUI was launched or focused.
     pub fn exit_code(&self) -> u8 {
-        if self.gui_launched {
+        if self.gui_launched || self.gui_focused {
             0
         } else {
             1
@@ -66,6 +70,9 @@ impl LaunchSummary {
 /// Production uses [`SystemEnvironment`]. Tests use a recording fake, so no
 /// process, pipe or UAC prompt is involved.
 pub trait LaunchEnvironment {
+    /// Ask an already-running GUI to show its window. Returns `false` when no
+    /// GUI owns the per-user single-instance endpoint.
+    fn focus_running_gui(&mut self) -> bool;
     /// Whether the control endpoint currently answers.
     fn daemon_reachable(&mut self) -> bool;
     /// The current `aevan` executable, used for accurate missing-file messages.
@@ -94,6 +101,18 @@ const DAEMON_WAIT: Duration = Duration::from_secs(10);
 
 /// Ensure the daemon, then launch the GUI.
 pub fn run(environment: &mut dyn LaunchEnvironment) -> LaunchSummary {
+    // Opening Aevan again while it is running must raise the existing window,
+    // not create a second process, window or tray icon.
+    if environment.focus_running_gui() {
+        return LaunchSummary {
+            daemon: DaemonStatus::Skipped,
+            gui_launched: false,
+            gui_focused: true,
+            notices: Vec::new(),
+            failure: None,
+        };
+    }
+
     let current = environment.current_executable();
     let current_name = file_name(&current);
     let daemon = environment.sibling(DAEMON_NAME);
@@ -103,6 +122,7 @@ pub fn run(environment: &mut dyn LaunchEnvironment) -> LaunchSummary {
         return LaunchSummary {
             daemon: DaemonStatus::AlreadyRunning,
             gui_launched: false,
+            gui_focused: false,
             notices: Vec::new(),
             failure: Some(format!("{GUI_NAME} is missing beside {current_name}")),
         };
@@ -156,12 +176,14 @@ pub fn run(environment: &mut dyn LaunchEnvironment) -> LaunchSummary {
         Ok(()) => LaunchSummary {
             daemon: daemon_status,
             gui_launched: true,
+            gui_focused: false,
             notices,
             failure: None,
         },
         Err(message) => LaunchSummary {
             daemon: daemon_status,
             gui_launched: false,
+            gui_focused: false,
             notices,
             failure: Some(format!("could not start {GUI_NAME}: {message}")),
         },
@@ -178,6 +200,10 @@ fn file_name(path: &Path) -> String {
 pub struct SystemEnvironment;
 
 impl LaunchEnvironment for SystemEnvironment {
+    fn focus_running_gui(&mut self) -> bool {
+        aevan_instance::show_running(Duration::from_millis(500)).is_ok()
+    }
+
     fn daemon_reachable(&mut self) -> bool {
         match client::request(&Request::status(), Some(Duration::from_secs(2))) {
             Ok(_) => true,
@@ -261,6 +287,8 @@ mod tests {
         start: Option<StartOutcome>,
         answers: bool,
         gui_error: Option<String>,
+        gui_focusable: bool,
+        focus_attempts: usize,
         started: Vec<PathBuf>,
         launched: Vec<PathBuf>,
         waits: Vec<Duration>,
@@ -287,6 +315,11 @@ mod tests {
     }
 
     impl LaunchEnvironment for Fake {
+        fn focus_running_gui(&mut self) -> bool {
+            self.focus_attempts += 1;
+            self.gui_focusable
+        }
+
         fn daemon_reachable(&mut self) -> bool {
             self.reachable
         }
@@ -322,6 +355,23 @@ mod tests {
                 None => Ok(()),
             }
         }
+    }
+
+    #[test]
+    fn a_running_gui_is_focused_instead_of_spawned() {
+        let mut fake = Fake::ready();
+        fake.gui_focusable = true;
+
+        let summary = run(&mut fake);
+
+        assert_eq!(fake.focus_attempts, 1);
+        assert_eq!(summary.daemon, DaemonStatus::Skipped);
+        assert!(!summary.gui_launched);
+        assert!(summary.gui_focused);
+        assert_eq!(summary.exit_code(), 0);
+        assert!(fake.launched.is_empty(), "must not spawn a second GUI");
+        assert!(fake.started.is_empty(), "must not touch the daemon");
+        assert!(fake.waits.is_empty());
     }
 
     #[test]
