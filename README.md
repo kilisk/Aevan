@@ -83,7 +83,9 @@ aevan connect work
 credentials. `aevan connect` performs one authentication attempt and prompts for
 the password and token. See [docs/CONNECT.md](docs/CONNECT.md),
 [docs/DAEMON.md](docs/DAEMON.md) and [docs/GUI.md](docs/GUI.md) for the full
-command and control contracts.
+command and control contracts, [docs/STATUS.md](docs/STATUS.md) for what is
+verified against a live gateway and what is not, and
+[docs/M6-IFT.md](docs/M6-IFT.md) for why the IF-T transport is not implemented.
 
 ## Architecture
 
