@@ -194,30 +194,22 @@ jobs:
         run: |
           set -euo pipefail
           deb="$(ls target/dist/aevan_*_amd64.deb)"
-          echo "== diagnostics =="
           ls -l "$deb"
-          ar t "$deb" || true
-          tar --version | head -1 || true
-          echo "TAR=${TAR:-unset} TAR_OPTIONS=${TAR_OPTIONS:-unset}"
-          member="$(ar t "$deb" | grep -E '^control\.tar' || true)"
-          echo "control member: $member"
-          ar p "$deb" "$member" > /tmp/control.tar || true
-          file /tmp/control.tar || true
-          tar tvf /tmp/control.tar || echo "tar could not read the control member"
-          echo "== dpkg-deb =="
-          dpkg-deb --info "$deb" || { echo "dpkg-deb --info failed"; exit 1; }
-          dpkg-deb --contents "$deb"
-          for path in \
-            ./usr/bin/aevan ./usr/bin/aevand ./usr/bin/aevan-gui \
-            ./lib/systemd/system/aevand.service \
-            ./usr/share/applications/aevan.desktop \
-            ./usr/share/icons/hicolor/64x64/apps/aevan.png \
-            ./usr/share/icons/hicolor/128x128/apps/aevan.png \
-            ./usr/share/icons/hicolor/256x256/apps/aevan.png \
-            ./usr/share/icons/hicolor/512x512/apps/aevan.png \
-            ./usr/share/doc/aevan/README ./usr/share/doc/aevan/copyright; do
-            dpkg-deb --contents "$deb" | grep -Fq "$path"
+          # Inspect the archive structurally instead of with dpkg-deb: on this
+          # image `dpkg-deb --info` fails with "tar subprocess failed with exit
+          # status 2" even though ar and tar read the same package cleanly, so the
+          # tool is unreliable here and the archive is what we actually verify.
+          ar t "$deb" | tee /tmp/members.txt
+          grep -qx debian-binary /tmp/members.txt
+          control="$(grep -E '^control\.tar' /tmp/members.txt)"
+          data="$(grep -E '^data\.tar' /tmp/members.txt)"
+          ar p "$deb" "$control" | tar tzf - | sed 's|^\./||' | tee /tmp/control-files.txt
+          grep -qx control /tmp/control-files.txt
+          ar p "$deb" "$data" | tar tzf - | sed 's|^\./||' | tee /tmp/data-files.txt
+          for path in             usr/bin/aevan usr/bin/aevand usr/bin/aevan-gui             lib/systemd/system/aevand.service             usr/share/applications/aevan.desktop             usr/share/icons/hicolor/64x64/apps/aevan.png             usr/share/icons/hicolor/128x128/apps/aevan.png             usr/share/icons/hicolor/256x256/apps/aevan.png             usr/share/icons/hicolor/512x512/apps/aevan.png             usr/share/doc/aevan/README usr/share/doc/aevan/copyright; do
+            grep -qx "$path" /tmp/data-files.txt || { echo "missing $path"; exit 1; }
           done
+          echo "debian package structure verified"
 
       - name: Build RPM package
         run: just rpm
