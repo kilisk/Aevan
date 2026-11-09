@@ -697,6 +697,8 @@ pub struct ViewModel {
     pub quit_confirmation: Option<String>,
     /// Whether the in-flight disconnect was requested by Quit.
     pub quit_after_disconnect: bool,
+    /// State to restore if a Quit-initiated disconnect fails and is cancelled.
+    quit_return_state: Option<ConnectionState>,
 }
 
 impl ViewModel {
@@ -757,6 +759,7 @@ impl ViewModel {
             autostart_busy: false,
             quit_confirmation: None,
             quit_after_disconnect: false,
+            quit_return_state: None,
         }
     }
 
@@ -768,10 +771,12 @@ impl ViewModel {
         let log_level = self.log_level;
         let endpoint = self.endpoint.clone();
         let started_daemon = self.started_daemon;
+        let leave_daemon_on_quit = self.leave_daemon_on_quit;
         let autostart = self.autostart.clone();
         let mut refreshed = Self::new(store, endpoint, now_unix);
         refreshed.log_level = log_level;
         refreshed.started_daemon = started_daemon;
+        refreshed.leave_daemon_on_quit = leave_daemon_on_quit;
         refreshed.autostart = autostart;
         if let Some(name) = selected {
             if refreshed.profiles.iter().any(|row| row.name == name) {
@@ -1109,22 +1114,19 @@ impl ViewModel {
 
     /// Decide what Quit must do before the process exits.
     ///
-    /// A live tunnel is disconnected first. A disconnect already in progress
-    /// needs confirmation because this GUI cannot prove the teardown finished.
+    /// A live tunnel is always disconnected first, even when the daemon itself
+    /// is left running (the macOS keepalive LaunchDaemon). Quit never
+    /// abandons a tunnel silently. A disconnect already in progress needs
+    /// confirmation because this GUI cannot prove the teardown finished.
     pub fn request_quit(&mut self) -> QuitPlan {
         self.quit_confirmation = None;
-        // A keepalive system daemon is not this GUI's to stop, and quitting
-        // must not tear down a live tunnel either; Disconnect is explicit.
-        if self.leave_daemon_on_quit {
-            self.quit_after_disconnect = false;
-            return QuitPlan::Exit;
-        }
         if self.can_disconnect() {
+            self.quit_return_state = Some(self.state.clone());
             let profile = self.begin_disconnect();
             self.quit_after_disconnect = true;
             return QuitPlan::Disconnect(profile);
         }
-        if self.state == ConnectionState::Disconnecting {
+        if self.quit_after_disconnect || self.state == ConnectionState::Disconnecting {
             let reason = "the tunnel is still disconnecting".to_owned();
             self.quit_confirmation = Some(reason.clone());
             return QuitPlan::Confirm(reason);
@@ -1137,6 +1139,7 @@ impl ViewModel {
     ///
     /// A failed disconnect keeps the window alive and records a confirmation;
     /// quitting anyway is then an explicit second decision, not a silent exit.
+    /// Cancel restores the pre-quit state so the connected view is still there.
     pub fn quit_disconnect_finished(
         &mut self,
         result: Result<StatusReport, ClientError>,
@@ -1144,12 +1147,22 @@ impl ViewModel {
         self.quit_after_disconnect = false;
         match result {
             Ok(status) => {
+                self.quit_return_state = None;
                 self.apply_status(status);
                 QuitPlan::Exit
             }
             Err(error) => {
+                // The daemon did not confirm teardown. The tunnel may still be
+                // up, so put the view back where it was instead of showing a
+                // failed state that would make Cancel look like a new attempt.
+                self.notice = None;
+                if let Some(previous) = self.quit_return_state.take() {
+                    if previous == ConnectionState::Connected {
+                        self.screen = Screen::Connected;
+                    }
+                    self.state = previous;
+                }
                 let reason = error.to_string();
-                self.apply_client_error(error);
                 self.quit_confirmation = Some(reason.clone());
                 QuitPlan::Confirm(reason)
             }
@@ -1159,12 +1172,29 @@ impl ViewModel {
     /// Accept the confirmation and finish quitting.
     pub fn quit_anyway(&mut self) -> QuitPlan {
         self.quit_confirmation = None;
+        self.quit_return_state = None;
+        self.quit_after_disconnect = false;
         QuitPlan::Exit
     }
 
     /// Dismiss the confirmation and leave the application running.
     pub fn cancel_quit(&mut self) {
         self.quit_confirmation = None;
+        self.quit_after_disconnect = false;
+        if let Some(previous) = self.quit_return_state.take() {
+            if previous == ConnectionState::Connected {
+                self.screen = Screen::Connected;
+            }
+            self.state = previous;
+        }
+    }
+
+    /// Whether Quit may stop the daemon process.
+    ///
+    /// Only a daemon this GUI started is ours to stop, and never on macOS
+    /// where the keepalive system LaunchDaemon must be left running (idle).
+    pub fn should_shutdown_daemon_on_quit(&self) -> bool {
+        self.started_daemon && !self.leave_daemon_on_quit
     }
 
     /// Mark the explicit daemon start as in flight.
@@ -2319,14 +2349,61 @@ mod tests {
             vm.quit_confirmation.as_deref(),
             Some("teardown did not finish")
         );
+        // A failure must not exit and must not turn the connected view into a
+        // failed state: Cancel has to return to the tunnel that may still be up.
+        assert_eq!(vm.state, ConnectionState::Connected);
+        assert_eq!(vm.screen, Screen::Connected);
 
         vm.cancel_quit();
         assert!(vm.quit_confirmation.is_none());
-        assert!(matches!(vm.state, ConnectionState::Failed { .. }));
+        assert_eq!(vm.state, ConnectionState::Connected);
+        assert_eq!(vm.screen, Screen::Connected);
 
-        vm.quit_confirmation = Some("teardown did not finish".into());
+        vm.request_quit();
+        vm.quit_disconnect_finished(Err(ClientError::Transport(
+            "teardown did not finish".into(),
+        )));
         assert_eq!(vm.quit_anyway(), QuitPlan::Exit);
         assert!(vm.quit_confirmation.is_none());
+    }
+
+    #[test]
+    fn quitting_on_macos_still_disconnects_but_leaves_the_daemon_running() {
+        let mut vm = model();
+        vm.leave_daemon_on_quit = true;
+        vm.started_daemon = true;
+        vm.apply_status(connected_report());
+
+        assert_eq!(
+            vm.request_quit(),
+            QuitPlan::Disconnect(Some("example".into()))
+        );
+        assert_eq!(vm.state, ConnectionState::Disconnecting);
+        assert!(
+            !vm.should_shutdown_daemon_on_quit(),
+            "the system LaunchDaemon must not be killed"
+        );
+
+        let plan = vm.quit_disconnect_finished(Ok(StatusReport {
+            state: "disconnected".into(),
+            ..StatusReport::default()
+        }));
+        assert_eq!(plan, QuitPlan::Exit);
+        assert_eq!(vm.state, ConnectionState::Disconnected);
+    }
+
+    #[test]
+    fn windows_quit_stops_only_a_daemon_this_gui_started() {
+        let mut vm = model();
+        assert!(!vm.should_shutdown_daemon_on_quit(), "nothing to stop yet");
+        vm.started_daemon = true;
+        assert!(vm.should_shutdown_daemon_on_quit());
+
+        vm.leave_daemon_on_quit = true;
+        assert!(
+            !vm.should_shutdown_daemon_on_quit(),
+            "a keepalive system daemon is never stopped"
+        );
     }
 
     #[test]

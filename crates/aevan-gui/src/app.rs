@@ -272,7 +272,7 @@ impl App {
             Message::DisconnectFinished(result) => {
                 if self.vm.quit_after_disconnect {
                     if self.vm.quit_disconnect_finished(result) == QuitPlan::Exit {
-                        return finish_quit(self.vm.started_daemon);
+                        return finish_quit(self.vm.should_shutdown_daemon_on_quit());
                     }
                 } else {
                     match result {
@@ -379,7 +379,10 @@ impl App {
             Message::QuitRequested => return self.begin_quit(),
             Message::QuitAnyway => {
                 if self.vm.quit_anyway() == QuitPlan::Exit {
-                    return finish_quit(self.vm.started_daemon);
+                    tracing::warn!(
+                        "quitting after a failed disconnect; the tunnel may still be up"
+                    );
+                    return finish_quit(self.vm.should_shutdown_daemon_on_quit());
                 }
             }
             Message::CancelQuit => self.vm.cancel_quit(),
@@ -399,7 +402,7 @@ impl App {
         match self.vm.request_quit() {
             QuitPlan::Disconnect(profile) => disconnect_task(profile),
             QuitPlan::Confirm(_) => Task::none(),
-            QuitPlan::Exit => finish_quit(self.vm.started_daemon),
+            QuitPlan::Exit => finish_quit(self.vm.should_shutdown_daemon_on_quit()),
         }
     }
 
@@ -438,11 +441,10 @@ impl App {
         let quit_confirmation = self.vm.quit_confirmation.as_ref().map(|reason| {
             container(
                 column![
-                    text("Could not disconnect before quitting")
+                    text(format!("Disconnect failed: {reason}"))
                         .size(16)
                         .color(DANGER),
-                    text(reason).size(13),
-                    text("Quit anyway? The tunnel may still be partially torn down.")
+                    text("Quit anyway? The tunnel may still be up.")
                         .size(13)
                         .color(MUTED),
                     row![
@@ -1313,8 +1315,8 @@ fn autostart_change_task(enabled: bool) -> Task<Message> {
 /// Stop a daemon this GUI started, then exit.
 ///
 /// macOS never stops the daemon here: it is a keepalive system LaunchDaemon
-/// and Quit must leave it (and any tunnel) alone. Disconnect is the explicit
-/// teardown action.
+/// and Quit leaves it running (and idle after the disconnect). Disconnect is
+/// the explicit teardown action.
 fn finish_quit(shutdown_daemon: bool) -> Task<Message> {
     let shutdown_daemon = shutdown_daemon && !cfg!(target_os = "macos");
     Task::perform(

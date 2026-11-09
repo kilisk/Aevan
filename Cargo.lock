@@ -101,6 +101,7 @@ dependencies = [
  "tao",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "tray-icon",
  "winresource",
  "zeroize",

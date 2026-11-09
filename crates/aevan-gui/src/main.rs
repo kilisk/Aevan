@@ -50,6 +50,7 @@ fn main() -> ExitCode {
     // A GUI-subsystem binary has no console, but it can still print into the
     // terminal that launched it. This must run before the first print.
     console::attach_parent_console();
+    init_tracing();
 
     let args = match parse_args() {
         Ok(args) => args,
@@ -89,6 +90,20 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Send `tracing` events (including the Quit-anyway warning) to stderr.
+///
+/// A packaged macOS app may have no visible stderr, but a terminal launch and
+/// the system log still receive the line; `RUST_LOG` can raise or lower it.
+fn init_tracing() {
+    use tracing_subscriber::EnvFilter;
+
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .try_init();
 }
 
 fn parse_args() -> Result<Args, String> {
