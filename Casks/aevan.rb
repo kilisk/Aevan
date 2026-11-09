@@ -1,5 +1,5 @@
 cask "aevan" do
-  version "0.2.4"
+  version "0.2.5"
   # Produced by the macOS CI job. Replace this placeholder with the published
   # .dmg checksum before cutting a release; see docs/HOMEBREW.md.
   sha256 "0000000000000000000000000000000000000000000000000000000000000000"
