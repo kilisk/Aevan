@@ -74,6 +74,8 @@ pub enum Message {
     Tray(TrayEvent),
     /// The window's close button was pressed: hide, do not quit.
     WindowCloseRequested(window::Id),
+    /// Another `aevan-gui`/`aevan` start asked this instance to show itself.
+    InstanceShowRequested,
     /// The explicit "Start daemon (Administrator)" action.
     StartDaemon,
     StartDaemonFinished(Result<(), String>),
@@ -146,7 +148,13 @@ impl App {
         let quit = iced::keyboard::on_key_press(cmd_q);
         #[cfg(not(target_os = "macos"))]
         let quit = Subscription::none();
-        Subscription::batch([tick, tray::subscription(), close, quit])
+        Subscription::batch([
+            tick,
+            tray::subscription(),
+            crate::instance::subscription(),
+            close,
+            quit,
+        ])
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
@@ -317,6 +325,7 @@ impl App {
                 self.vm.window_closed();
                 return window::change_mode(id, window::Mode::Hidden);
             }
+            Message::InstanceShowRequested => return focus_window(),
             Message::StartDaemon => {
                 if self.vm.begin_daemon_start() {
                     return start_daemon_task();
@@ -1121,7 +1130,14 @@ fn disconnect_task(profile: Option<String>) -> Task<Message> {
 }
 
 fn focus_window() -> Task<Message> {
-    iced::window::get_latest().and_then(iced::window::gain_focus)
+    // A window hidden by its close button has to be shown again before it can
+    // take focus. The tray and the single-instance endpoint share this path.
+    iced::window::get_latest().and_then(|id| {
+        Task::batch([
+            iced::window::change_mode(id, window::Mode::Windowed),
+            iced::window::gain_focus(id),
+        ])
+    })
 }
 
 #[cfg(target_os = "macos")]
