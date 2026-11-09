@@ -54,8 +54,18 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Install just
-        uses: extractions/setup-just@v2
+      - name: Install just (pinned)
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if cargo install just --version 1.59.0 --locked; then
+              break
+            fi
+            echo "cargo install just failed (attempt ${attempt}); retrying" >&2
+            sleep $((attempt * 5))
+          done
+          test "$(just --version)" = "just 1.59.0"
 
       - name: Install WiX Toolset v7
         shell: pwsh
@@ -120,8 +130,18 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Install just
-        uses: extractions/setup-just@v2
+      - name: Install just (pinned)
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if cargo install just --version 1.59.0 --locked; then
+              break
+            fi
+            echo "cargo install just failed (attempt ${attempt}); retrying" >&2
+            sleep $((attempt * 5))
+          done
+          test "$(just --version)" = "just 1.59.0"
 
       - name: Build universal .app and .pkg
         run: just dist-macos
@@ -148,8 +168,18 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Install just
-        uses: extractions/setup-just@v2
+      - name: Install just (pinned)
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if cargo install just --version 1.59.0 --locked; then
+              break
+            fi
+            echo "cargo install just failed (attempt ${attempt}); retrying" >&2
+            sleep $((attempt * 5))
+          done
+          test "$(just --version)" = "just 1.59.0"
 
       - name: Build Linux tarball
         run: just dist-linux
