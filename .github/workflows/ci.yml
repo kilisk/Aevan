@@ -41,6 +41,54 @@ jobs:
       - name: Release build
         run: cargo build --release
 
+      # The smoke example is the first real proof that a device opens on macOS
+      # and Linux. It is built unprivileged and run under sudo with the skip
+      # escape hatch explicitly removed, so a broken backend fails the job.
+      - name: Ensure /dev/net/tun (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          if [ ! -c /dev/net/tun ]; then
+            echo "/dev/net/tun is missing; trying to load the tun module"
+            if ! sudo modprobe tun; then
+              echo "modprobe tun failed"
+            fi
+          fi
+          if [ ! -c /dev/net/tun ]; then
+            echo "/dev/net/tun is still missing; creating the device node (c 10 200)"
+            sudo mkdir -p /dev/net
+            if ! sudo mknod /dev/net/tun c 10 200; then
+              echo "mknod /dev/net/tun failed"
+            fi
+            sudo chmod 666 /dev/net/tun || true
+          fi
+          ls -l /dev/net/tun || true
+
+      - name: TUN smoke (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          cargo build --example tun_smoke
+          unset AEVAN_TUN_SMOKE_ALLOW_SKIP
+          if [ ! -c /dev/net/tun ]; then
+            echo "::warning::SKIPPED: /dev/net/tun is unavailable on this runner after modprobe tun and mknod c 10 200; the Linux TUN backend cannot be exercised here."
+            {
+              echo "### TUN smoke (Linux): SKIPPED"
+              echo ""
+              echo "/dev/net/tun is unavailable after \`modprobe tun\` and \`mknod /dev/net/tun c 10 200\`."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          sudo env -u AEVAN_TUN_SMOKE_ALLOW_SKIP ./target/debug/examples/tun_smoke
+
+      - name: TUN smoke (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          cargo build --example tun_smoke
+          unset AEVAN_TUN_SMOKE_ALLOW_SKIP
+          sudo env -u AEVAN_TUN_SMOKE_ALLOW_SKIP ./target/debug/examples/tun_smoke
+
   package-windows:
     name: package (windows-x64)
     needs: test
