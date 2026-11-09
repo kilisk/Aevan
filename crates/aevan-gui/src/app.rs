@@ -485,7 +485,7 @@ impl App {
 
         if self.vm.profiles.is_empty() {
             list = list.push(
-                text("No profiles. Add one with `aevan profile add …` and press Refresh.")
+                text("No profiles yet. Use the Add profile button above to create one.")
                     .color(MUTED),
             );
         }
