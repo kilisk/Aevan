@@ -18,7 +18,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::Serialize;
 use zeroize::Zeroizing;
 
-use aevan_core::{ProfileStore, SplitTunnelIntent};
+use aevan_core::{Profile, ProfileStore, SplitTunnelIntent};
 use aevan_daemon::autostart::TaskState;
 use aevan_daemon::client::ClientError;
 use aevan_daemon::{RecoveryReport, Request, SecretString, StatusReport};
@@ -41,6 +41,8 @@ pub enum Screen {
     Connected,
     /// Split-tunnel preview, log level and endpoint.
     Settings,
+    /// Sheet for adding a non-secret profile.
+    AddProfile,
 }
 
 impl Screen {
@@ -51,6 +53,7 @@ impl Screen {
             Self::Connect => "connect",
             Self::Connected => "connected",
             Self::Settings => "settings",
+            Self::AddProfile => "add-profile",
         }
     }
 }
@@ -370,6 +373,93 @@ pub struct ProfileRow {
     pub totp_enrolled: bool,
 }
 
+/// Plain data typed into the "Add profile" sheet.
+///
+/// There is deliberately no password or token field: a profile never carries a
+/// secret, and the sheet says so.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProfileDraft {
+    /// New profile name.
+    pub name: String,
+    /// Gateway URL.
+    pub url: String,
+    /// Authentication realm.
+    pub realm: String,
+    /// Username used for the non-interactive login.
+    pub username: String,
+}
+
+/// Per-field validation messages for [`ProfileDraft`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProfileDraftErrors {
+    /// Name problem, if any.
+    pub name: Option<String>,
+    /// Gateway URL problem, if any.
+    pub url: Option<String>,
+    /// Realm problem, if any.
+    pub realm: Option<String>,
+    /// Username problem, if any.
+    pub username: Option<String>,
+}
+
+impl ProfileDraftErrors {
+    /// Whether every field passed validation.
+    pub fn is_valid(&self) -> bool {
+        self.name.is_none() && self.url.is_none() && self.realm.is_none() && self.username.is_none()
+    }
+
+    /// The first message, used for a one-line notice when saving is refused.
+    pub fn first(&self) -> Option<&str> {
+        self.name
+            .as_deref()
+            .or(self.url.as_deref())
+            .or(self.realm.as_deref())
+            .or(self.username.as_deref())
+    }
+}
+
+/// Validate a draft against the profile names that already exist.
+///
+/// The URL rule is "parses as http(s) and has a host". The profile store
+/// itself still enforces HTTPS when the profile is saved.
+pub fn validate_profile_draft<'a>(
+    draft: &ProfileDraft,
+    existing: impl IntoIterator<Item = &'a str>,
+) -> ProfileDraftErrors {
+    let mut errors = ProfileDraftErrors::default();
+
+    let name = draft.name.trim();
+    if name.is_empty() {
+        errors.name = Some("name is required".to_owned());
+    } else if name.chars().any(char::is_whitespace) {
+        errors.name = Some("name must not contain whitespace".to_owned());
+    } else if existing.into_iter().any(|existing| existing == name) {
+        errors.name = Some(format!("a profile named '{name}' already exists"));
+    }
+
+    let url = draft.url.trim();
+    if url.is_empty() {
+        errors.url = Some("gateway URL is required".to_owned());
+    } else {
+        match aevan_proto::Url::parse(url) {
+            Ok(parsed) if !parsed.host.is_empty() => {}
+            Ok(_) => errors.url = Some("gateway URL must include a host".to_owned()),
+            Err(_) => {
+                errors.url = Some("gateway URL must be a valid http(s) URL with a host".to_owned())
+            }
+        }
+    }
+
+    if draft.realm.trim().is_empty() {
+        errors.realm = Some("realm is required".to_owned());
+    }
+    if draft.username.trim().is_empty() {
+        errors.username = Some("username is required for non-interactive login".to_owned());
+    }
+
+    errors
+}
+
 /// One of the logging levels accepted by the daemon.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogLevel {
@@ -575,6 +665,12 @@ pub struct ViewModel {
     pub endpoint: String,
     /// Non-state notice (for example a missing profile or empty password).
     pub notice: Option<String>,
+    /// Fields typed into the "Add profile" sheet.
+    pub add_profile: ProfileDraft,
+    /// Per-field validation of [`Self::add_profile`].
+    pub add_profile_errors: ProfileDraftErrors,
+    /// A save-time failure (disk or store), shown inside the sheet.
+    pub add_profile_error: Option<String>,
     /// Base32 secret typed into the enrol form; zeroized and never displayed
     /// once saved.
     pub totp_input: Zeroizing<String>,
@@ -643,6 +739,9 @@ impl ViewModel {
             log_level: LogLevel::parse("info"),
             endpoint,
             notice: None,
+            add_profile: ProfileDraft::default(),
+            add_profile_errors: ProfileDraftErrors::default(),
+            add_profile_error: None,
             totp_input: Zeroizing::new(String::new()),
             pending_totp: None,
             pending_totp_text: None,
@@ -716,6 +815,147 @@ impl ViewModel {
         self.notice = None;
         self.now_unix = now_unix;
         self.screen = Screen::Settings;
+    }
+
+    /// Open the "Add profile" sheet with an empty draft.
+    pub fn begin_add_profile(&mut self) {
+        self.add_profile = ProfileDraft::default();
+        self.add_profile_errors = ProfileDraftErrors::default();
+        self.add_profile_error = None;
+        self.notice = None;
+        self.screen = Screen::AddProfile;
+    }
+
+    /// Close the "Add profile" sheet without saving.
+    pub fn cancel_add_profile(&mut self) {
+        self.add_profile = ProfileDraft::default();
+        self.add_profile_errors = ProfileDraftErrors::default();
+        self.add_profile_error = None;
+        if self.screen == Screen::AddProfile {
+            self.screen = Screen::Profiles;
+        }
+    }
+
+    /// Update the draft name and revalidate every field.
+    pub fn set_add_profile_name(&mut self, value: String) {
+        self.add_profile.name = value;
+        self.refresh_add_profile_errors();
+    }
+
+    /// Update the draft gateway URL and revalidate every field.
+    pub fn set_add_profile_url(&mut self, value: String) {
+        self.add_profile.url = value;
+        self.refresh_add_profile_errors();
+    }
+
+    /// Update the draft realm and revalidate every field.
+    pub fn set_add_profile_realm(&mut self, value: String) {
+        self.add_profile.realm = value;
+        self.refresh_add_profile_errors();
+    }
+
+    /// Update the draft username and revalidate every field.
+    pub fn set_add_profile_username(&mut self, value: String) {
+        self.add_profile.username = value;
+        self.refresh_add_profile_errors();
+    }
+
+    /// Revalidate the draft and store the per-field messages.
+    pub fn validate_add_profile(&mut self) -> bool {
+        self.refresh_add_profile_errors();
+        self.add_profile_errors.is_valid()
+    }
+
+    /// Whether Save may be pressed for the current draft.
+    pub fn can_save_add_profile(&self) -> bool {
+        validate_profile_draft(&self.add_profile, self.existing_profile_names()).is_valid()
+    }
+
+    /// Build the profile described by a valid draft.
+    ///
+    /// The store still has the final say on rules such as HTTPS, so a
+    /// store-side failure is reported on the URL field.
+    pub fn build_profile_from_draft(&mut self) -> Result<Profile, String> {
+        if !self.validate_add_profile() {
+            return Err(self
+                .add_profile_errors
+                .first()
+                .unwrap_or("fix the highlighted fields")
+                .to_owned());
+        }
+
+        let profile = Profile::new(
+            self.add_profile.name.trim(),
+            self.add_profile.url.trim(),
+            self.add_profile.realm.trim(),
+        )
+        .map_err(|error| {
+            let message = error.to_string();
+            self.add_profile_errors.url = Some(message.clone());
+            message
+        })?;
+
+        let mut profile = profile;
+        profile.username = Some(self.add_profile.username.trim().to_owned());
+        Ok(profile)
+    }
+
+    /// Add the draft to `store` and move back to the refreshed profile list.
+    ///
+    /// The caller persists `store` afterwards; this keeps the view model free
+    /// of path and file handling while still writing through [`ProfileStore`].
+    pub fn save_added_profile(
+        &mut self,
+        store: &mut ProfileStore,
+        now_unix: u64,
+    ) -> Result<String, String> {
+        let profile = match self.build_profile_from_draft() {
+            Ok(profile) => profile,
+            Err(message) => {
+                self.add_profile_error = Some(message.clone());
+                return Err(message);
+            }
+        };
+        let name = profile.name.clone();
+        if let Err(error) = store.add(profile) {
+            let message = error.to_string();
+            if message.contains("already exists") {
+                self.add_profile_errors.name = Some(message.clone());
+            }
+            self.add_profile_error = Some(message.clone());
+            return Err(message);
+        }
+
+        self.apply_profile_added(store, &name, now_unix);
+        Ok(name)
+    }
+
+    /// Refresh rows from `store`, select the newly added profile and return to
+    /// the list screen.
+    pub fn apply_profile_added(&mut self, store: &ProfileStore, name: &str, now_unix: u64) {
+        self.reload_profiles(store, now_unix);
+        if self.profiles.iter().any(|row| row.name == name) {
+            self.selected = Some(name.to_owned());
+            self.username = store
+                .get(name)
+                .and_then(|profile| profile.username.clone())
+                .unwrap_or_default();
+        }
+        self.add_profile = ProfileDraft::default();
+        self.add_profile_errors = ProfileDraftErrors::default();
+        self.add_profile_error = None;
+        self.notice = Some(format!("Profile '{name}' added."));
+        self.screen = Screen::Profiles;
+    }
+
+    fn existing_profile_names(&self) -> impl Iterator<Item = &str> {
+        self.profiles.iter().map(|row| row.name.as_str())
+    }
+
+    fn refresh_add_profile_errors(&mut self) {
+        let errors = validate_profile_draft(&self.add_profile, self.existing_profile_names());
+        self.add_profile_errors = errors;
+        self.add_profile_error = None;
     }
 
     /// The selected profile row, if any.
@@ -2130,5 +2370,126 @@ mod tests {
         vm.apply_autostart_change(Ok(TaskState::Present));
         assert_eq!(vm.autostart, AutostartState::Present);
         assert_eq!(vm.notice.as_deref(), Some("Start at login is on."));
+    }
+
+    fn draft(vm: &mut ViewModel, name: &str, url: &str, realm: &str, username: &str) {
+        vm.set_add_profile_name(name.into());
+        vm.set_add_profile_url(url.into());
+        vm.set_add_profile_realm(realm.into());
+        vm.set_add_profile_username(username.into());
+    }
+
+    #[test]
+    fn an_empty_add_profile_draft_shows_each_required_field_and_disables_save() {
+        let mut vm = ViewModel::new(&ProfileStore::default(), "endpoint".into(), 0);
+        vm.begin_add_profile();
+
+        assert_eq!(vm.screen, Screen::AddProfile);
+        assert!(!vm.can_save_add_profile());
+        assert!(!vm.validate_add_profile());
+        assert!(vm.add_profile_errors.name.is_some());
+        assert!(vm.add_profile_errors.url.is_some());
+        assert!(vm.add_profile_errors.realm.is_some());
+        assert!(vm.add_profile_errors.username.is_some());
+    }
+
+    #[test]
+    fn a_duplicate_profile_name_is_rejected() {
+        let mut vm = model();
+        vm.begin_add_profile();
+        draft(
+            &mut vm,
+            "example",
+            "https://other.example.net/realm",
+            "realm",
+            "user",
+        );
+
+        assert!(!vm.can_save_add_profile());
+        let message = vm.add_profile_errors.name.as_deref().expect("name error");
+        assert!(message.contains("already exists"), "{message}");
+    }
+
+    #[test]
+    fn the_gateway_url_must_parse_as_http_or_https_with_a_host() {
+        let mut vm = ViewModel::new(&ProfileStore::default(), "endpoint".into(), 0);
+        vm.begin_add_profile();
+
+        for invalid in ["not a url", "ftp://example.net/realm", "https:///realm"] {
+            draft(&mut vm, "name", invalid, "realm", "user");
+            assert!(!vm.can_save_add_profile(), "{invalid} must be rejected");
+            assert!(vm.add_profile_errors.url.is_some(), "{invalid}");
+        }
+
+        draft(&mut vm, "name", "http://example.net/realm", "realm", "user");
+        assert!(
+            vm.can_save_add_profile(),
+            "the sheet accepts both http and https"
+        );
+    }
+
+    #[test]
+    fn a_username_is_required_for_non_interactive_login() {
+        let mut vm = ViewModel::new(&ProfileStore::default(), "endpoint".into(), 0);
+        vm.begin_add_profile();
+        draft(&mut vm, "name", "https://example.net/realm", "realm", "   ");
+
+        assert!(!vm.can_save_add_profile());
+        let message = vm
+            .add_profile_errors
+            .username
+            .as_deref()
+            .expect("username error");
+        assert!(message.contains("non-interactive"), "{message}");
+    }
+
+    #[test]
+    fn saving_a_profile_refreshes_selects_it_and_returns_to_the_list() {
+        let mut store = ProfileStore::default();
+        let mut vm = ViewModel::new(&store, "endpoint".into(), 0);
+        vm.begin_add_profile();
+        draft(
+            &mut vm,
+            "second",
+            "https://second.example.net/realm",
+            "second_realm",
+            "second_user",
+        );
+        assert!(vm.can_save_add_profile());
+
+        let name = vm.save_added_profile(&mut store, 0).expect("save");
+
+        assert_eq!(name, "second");
+        assert_eq!(vm.screen, Screen::Profiles);
+        assert!(vm.profiles.iter().any(|row| row.name == "second"));
+        assert_eq!(vm.selected.as_deref(), Some("second"));
+        assert_eq!(vm.username, "second_user");
+        assert_eq!(
+            store
+                .get("second")
+                .and_then(|profile| profile.username.as_deref()),
+            Some("second_user")
+        );
+        assert_eq!(vm.add_profile, ProfileDraft::default());
+        assert!(
+            vm.notice
+                .as_deref()
+                .is_some_and(|notice| notice.contains("added")),
+            "{:?}",
+            vm.notice
+        );
+    }
+
+    #[test]
+    fn cancelling_the_sheet_leaves_the_store_and_list_untouched() {
+        let store = store();
+        let mut vm = ViewModel::new(&store, "endpoint".into(), 0);
+        vm.begin_add_profile();
+        vm.set_add_profile_name("second".into());
+        vm.cancel_add_profile();
+
+        assert_eq!(vm.screen, Screen::Profiles);
+        assert_eq!(vm.profiles.len(), store.profiles.len());
+        assert_eq!(vm.add_profile, ProfileDraft::default());
     }
 }

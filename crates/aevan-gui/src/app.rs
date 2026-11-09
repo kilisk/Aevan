@@ -41,6 +41,13 @@ pub enum Message {
     ShowProfiles,
     ShowSettings,
     SettingsForProfile(String),
+    BeginAddProfile,
+    AddProfileName(String),
+    AddProfileUrl(String),
+    AddProfileRealm(String),
+    AddProfileUsername(String),
+    SaveProfile,
+    CancelAddProfile,
     Back,
     Username(String),
     Password(SecretField),
@@ -201,6 +208,28 @@ impl App {
                 self.vm.select_for_settings(&name, now_unix());
                 if self.vm.selected.is_some() {
                     return load_totp_task(name);
+                }
+            }
+            Message::BeginAddProfile => self.vm.begin_add_profile(),
+            Message::AddProfileName(value) => self.vm.set_add_profile_name(value),
+            Message::AddProfileUrl(value) => self.vm.set_add_profile_url(value),
+            Message::AddProfileRealm(value) => self.vm.set_add_profile_realm(value),
+            Message::AddProfileUsername(value) => self.vm.set_add_profile_username(value),
+            Message::CancelAddProfile => self.vm.cancel_add_profile(),
+            Message::SaveProfile => {
+                let loaded = ProfileStore::default_path()
+                    .and_then(|path| ProfileStore::load(&path).map(|store| (path, store)));
+                match loaded {
+                    Ok((path, mut store)) => {
+                        if self.vm.save_added_profile(&mut store, now_unix()).is_ok() {
+                            if let Err(error) = store.save(&path) {
+                                self.vm.notice = Some(format!(
+                                    "the profile was added but could not be saved: {error}"
+                                ));
+                            }
+                        }
+                    }
+                    Err(error) => self.vm.add_profile_error = Some(error.to_string()),
                 }
             }
             Message::Back => {
@@ -391,6 +420,7 @@ impl App {
             Screen::Connect => self.connect_view(),
             Screen::Connected => self.connected_view(),
             Screen::Settings => self.settings_view(),
+            Screen::AddProfile => self.add_profile_view(),
         };
 
         let banner = self
@@ -601,6 +631,10 @@ impl App {
             row![
                 text("Profiles").size(22),
                 Space::with_width(Length::Fill),
+                button(text("Add profile").size(14))
+                    .on_press(Message::BeginAddProfile)
+                    .style(button::primary)
+                    .padding([6, 12]),
                 button(text("Retry").size(14))
                     .on_press(Message::RetryDaemon)
                     .style(button::secondary)
@@ -623,6 +657,91 @@ impl App {
             view = view.push(daemon_banner);
         }
         view.push(list).into()
+    }
+
+    fn add_profile_view(&self) -> Element<'_, Message> {
+        let mut form = column![
+            text("Add profile").size(22),
+            text(
+                "Profiles hold no password or token. Aevan asks for credentials only when you connect, and secrets live in the OS keyring."
+            )
+            .size(12)
+            .color(MUTED),
+        ]
+        .spacing(12)
+        .width(Length::Fill);
+
+        form = form.push(text("Name").size(12).color(MUTED)).push(
+            text_input("profile name", &self.vm.add_profile.name)
+                .on_input(Message::AddProfileName)
+                .padding(8)
+                .width(Length::Fill),
+        );
+        if let Some(error) = &self.vm.add_profile_errors.name {
+            form = form.push(text(error.clone()).size(12).color(DANGER));
+        }
+
+        form = form.push(text("Gateway URL").size(12).color(MUTED)).push(
+            text_input("https://vpn.example.net/realm", &self.vm.add_profile.url)
+                .on_input(Message::AddProfileUrl)
+                .padding(8)
+                .width(Length::Fill),
+        );
+        if let Some(error) = &self.vm.add_profile_errors.url {
+            form = form.push(text(error.clone()).size(12).color(DANGER));
+        }
+
+        form = form.push(text("Realm").size(12).color(MUTED)).push(
+            text_input("authentication realm", &self.vm.add_profile.realm)
+                .on_input(Message::AddProfileRealm)
+                .padding(8)
+                .width(Length::Fill),
+        );
+        if let Some(error) = &self.vm.add_profile_errors.realm {
+            form = form.push(text(error.clone()).size(12).color(DANGER));
+        }
+
+        form = form.push(text("Username").size(12).color(MUTED)).push(
+            text_input("username", &self.vm.add_profile.username)
+                .on_input(Message::AddProfileUsername)
+                .padding(8)
+                .width(Length::Fill),
+        );
+        if let Some(error) = &self.vm.add_profile_errors.username {
+            form = form.push(text(error.clone()).size(12).color(DANGER));
+        }
+
+        form = form
+            .push(text("Password").size(12).color(MUTED))
+            .push(
+                text(
+                    "Not stored. A password is requested only when you connect and is never written to the profile store."
+                )
+                .size(12)
+                .color(MUTED),
+            );
+
+        if let Some(error) = &self.vm.add_profile_error {
+            form = form.push(text(error.clone()).size(12).color(DANGER));
+        }
+
+        let actions = row![
+            button(text("Save").size(15))
+                .on_press_maybe(
+                    self.vm
+                        .can_save_add_profile()
+                        .then_some(Message::SaveProfile)
+                )
+                .style(button::primary)
+                .padding([8, 22]),
+            button(text("Cancel").size(14))
+                .on_press(Message::CancelAddProfile)
+                .style(button::secondary)
+                .padding([8, 14]),
+        ]
+        .spacing(8);
+
+        form.push(actions).into()
     }
 
     fn connect_view(&self) -> Element<'_, Message> {

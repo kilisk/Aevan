@@ -46,6 +46,21 @@ machine-readable document for `--headless`.
 
 The binary name stays `aevan-gui`.
 
+## Single instance
+
+There is one GUI per user. The first process binds a per-user endpoint — the
+named pipe `\\.\pipe\aevan-gui` on Windows (created with the same explicit
+user-SID + Medium-integrity DACL as the daemon) or
+`<config dir>/aevan-gui.sock` on Unix. Later starts connect, send one line
+`show`, and exit 0 without creating a window or tray icon; the primary raises
+and focuses its window. `aevan` with no subcommand follows the same rule: if
+the GUI endpoint answers it asks the running GUI to show, and only then does
+the normal daemon/GUI launch path run.
+
+A stale Unix socket (or a pipe name that no longer accepts connections) is
+removed or retried once, so a crashed instance cannot leave the GUI permanently
+unopenable and a failed probe never falls through to a second window.
+
 ## System tray / menu-bar item (Windows and macOS)
 
 The same menu exists on both platforms:
@@ -123,6 +138,13 @@ notification is shown for a plain `disconnected` transition or for repeated
 * One row per profile, sorted by name, with a status dot:
   green connected, amber busy, red failed/unavailable, grey disconnected.
 * The daemon's own state and failure message are shown above the list.
+* `Add profile` opens a sheet for the name, gateway URL, realm and username.
+  Each field is validated in the view model (required name, unique name, an
+  http(s) URL with a host, realm and username), Save stays disabled until the
+  draft is valid, and saving writes through `ProfileStore`, refreshes the list,
+  selects the new profile and returns to it. No password or token field exists:
+  profiles store no secrets. Editing an existing profile and deleting from the
+  GUI are not included in this pass (use `aevan profile rm`).
 * `Connect` opens the connect sheet for that profile; `Settings` opens that
   profile's settings.
 * `Retry` performs one `status` probe. `Refresh` reloads `profiles.toml`.
