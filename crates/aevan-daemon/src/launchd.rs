@@ -38,6 +38,11 @@ pub fn plist(program: &Path) -> String {
 	<true/>
 	<key>ProcessType</key>
 	<string>Interactive</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>HOME</key>
+		<string>/var/root</string>
+	</dict>
 	<key>StandardOutPath</key>
 	<string>/var/log/aevand.log</string>
 	<key>StandardErrorPath</key>
@@ -258,6 +263,13 @@ mod tests {
         assert!(text.contains("<key>RunAtLoad</key>\n\t<true/>"));
         assert!(text.contains("<key>KeepAlive</key>\n\t<true/>"));
         assert!(!text.contains("<key>SuccessfulExit</key>"));
+        // launchd gives system daemons no HOME; the plist supplies one so any
+        // remaining $HOME lookup cannot fail the daemon at startup.
+        assert!(text.contains("<key>EnvironmentVariables</key>"));
+        assert!(text.contains(
+            "<key>HOME</key>
+		<string>/var/root</string>"
+        ));
     }
 
     #[test]

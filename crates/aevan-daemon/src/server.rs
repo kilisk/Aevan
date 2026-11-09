@@ -14,7 +14,7 @@ use tokio::sync::broadcast;
 use aevan_core::{AevanError, AevanResult};
 
 use crate::logs::Level;
-use crate::protocol::{encode_line, Request, Response, MAX_LINE_BYTES};
+use crate::protocol::{encode_line, Request, Response, MAX_LINE_BYTES, SCHEMA_VERSION};
 use crate::runtime::Daemon;
 
 /// Name of the Windows named pipe.
@@ -55,10 +55,33 @@ pub fn system_endpoint_path() -> Option<PathBuf> {
 /// can be unit-tested everywhere.
 #[cfg(unix)]
 pub fn candidate_endpoints() -> AevanResult<Vec<PathBuf>> {
-    Ok(ordered_candidates(
-        system_endpoint_path(),
-        per_user_endpoint_path()?,
-    ))
+    // A client whose HOME cannot be resolved (cron, launchd, a stripped shell)
+    // must still be able to reach a root daemon on the system endpoint.
+    let per_user = per_user_endpoint_path().ok();
+    ordered_candidates_optional(system_endpoint_path(), per_user)
+}
+
+#[cfg(unix)]
+fn ordered_candidates_optional(
+    system: Option<PathBuf>,
+    per_user: Option<PathBuf>,
+) -> AevanResult<Vec<PathBuf>> {
+    let mut candidates = Vec::with_capacity(2);
+    if let Some(system) = system {
+        candidates.push(system);
+    }
+    if let Some(per_user) = per_user {
+        if !candidates.contains(&per_user) {
+            candidates.push(per_user);
+        }
+    }
+    if candidates.is_empty() {
+        return Err(AevanError::Config(
+            "no control endpoint is available; HOME is unset and this platform has no system socket"
+                .into(),
+        ));
+    }
+    Ok(candidates)
 }
 
 #[cfg(not(unix))]
@@ -66,21 +89,9 @@ pub fn candidate_endpoints() -> AevanResult<Vec<PathBuf>> {
     Ok(Vec::new())
 }
 
-#[cfg(unix)]
-fn ordered_candidates(system: Option<PathBuf>, per_user: PathBuf) -> Vec<PathBuf> {
-    let mut candidates = Vec::with_capacity(2);
-    if let Some(system) = system {
-        candidates.push(system);
-    }
-    if !candidates.contains(&per_user) {
-        candidates.push(per_user);
-    }
-    candidates
-}
-
 /// Select the binding endpoint for a daemon: system when root, per-user
 /// otherwise. Pure so the root/non-root split is testable without a real uid.
-#[cfg(unix)]
+#[cfg(all(unix, test))]
 fn select_binding_endpoint(root: bool, system: Option<PathBuf>, per_user: PathBuf) -> PathBuf {
     match (root, system) {
         (true, Some(system)) => system,
@@ -99,11 +110,14 @@ pub fn endpoint_path() -> AevanResult<PathBuf> {
 
 #[cfg(unix)]
 pub fn endpoint_path_for_root(root: bool) -> AevanResult<PathBuf> {
-    Ok(select_binding_endpoint(
-        root,
-        system_endpoint_path(),
-        per_user_endpoint_path()?,
-    ))
+    // A root daemon binds the machine-wide endpoint and must not depend on the
+    // per-user one: launchd starts system daemons with no HOME, and resolving
+    // $HOME there used to fail the whole call, so aevand exited 1 before it
+    // ever opened a socket.
+    match (root, system_endpoint_path()) {
+        (true, Some(system)) => Ok(system),
+        _ => per_user_endpoint_path(),
+    }
 }
 
 /// Whether `path` is the machine-wide system endpoint.
@@ -189,7 +203,7 @@ where
                 format!("request line exceeds {MAX_LINE_BYTES} bytes"),
                 AevanError::Config("request too large".into()).exit_code(),
             );
-            write_response(&mut write, &response).await?;
+            write_response(&mut write, &response, SCHEMA_VERSION).await?;
             continue;
         }
 
@@ -201,7 +215,7 @@ where
                     format!("invalid request JSON: {error}"),
                     AevanError::Config("invalid request".into()).exit_code(),
                 );
-                write_response(&mut write, &response).await?;
+                write_response(&mut write, &response, SCHEMA_VERSION).await?;
                 continue;
             }
         };
@@ -213,15 +227,18 @@ where
                 crate::protocol::SCHEMA_VERSION
             ));
             let response = Response::error(&request.command, &error);
-            write_response(&mut write, &response).await?;
+            write_response(&mut write, &response, SCHEMA_VERSION).await?;
             continue;
         }
 
+        // A version-1 client only understands version-1 responses, so answer
+        // in the version the request used. This build sends 2.
+        let schema_version = request.schema_version;
         let command = request.command.clone();
         match command.as_str() {
             "status" => {
                 let response = Response::status("status", daemon.snapshot());
-                write_response(&mut write, &response).await?;
+                write_response(&mut write, &response, schema_version).await?;
             }
             "connect" => {
                 let password = match request.password {
@@ -230,21 +247,38 @@ where
                         let error = AevanError::Config(
                             "connect request is missing the password field".into(),
                         );
-                        write_response(&mut write, &Response::error("connect", &error)).await?;
+                        write_response(
+                            &mut write,
+                            &Response::error("connect", &error),
+                            schema_version,
+                        )
+                        .await?;
                         continue;
                     }
                 };
                 let token = request.token.map(|token| token.into_inner());
                 match daemon
-                    .connect(request.profile, request.username, password, token)
+                    .connect(
+                        request.profile,
+                        request.gateway_url,
+                        request.realm,
+                        request.username,
+                        password,
+                        token,
+                    )
                     .await
                 {
                     Ok(status) => {
                         let response = Response::status("connect", status);
-                        write_response(&mut write, &response).await?;
+                        write_response(&mut write, &response, schema_version).await?;
                     }
                     Err(error) => {
-                        write_response(&mut write, &Response::error("connect", &error)).await?;
+                        write_response(
+                            &mut write,
+                            &Response::error("connect", &error),
+                            schema_version,
+                        )
+                        .await?;
                     }
                 }
             }
@@ -255,20 +289,30 @@ where
                 {
                     Ok(status) => {
                         let response = Response::status("disconnect", status);
-                        write_response(&mut write, &response).await?;
+                        write_response(&mut write, &response, schema_version).await?;
                     }
                     Err(error) => {
-                        write_response(&mut write, &Response::error("disconnect", &error)).await?;
+                        write_response(
+                            &mut write,
+                            &Response::error("disconnect", &error),
+                            schema_version,
+                        )
+                        .await?;
                     }
                 }
             }
             "recover" => match daemon.recover().await {
                 Ok(report) => {
                     let response = Response::recovered("recover", daemon.snapshot(), report);
-                    write_response(&mut write, &response).await?;
+                    write_response(&mut write, &response, schema_version).await?;
                 }
                 Err(error) => {
-                    write_response(&mut write, &Response::error("recover", &error)).await?;
+                    write_response(
+                        &mut write,
+                        &Response::error("recover", &error),
+                        schema_version,
+                    )
+                    .await?;
                 }
             },
             "logs" => {
@@ -277,13 +321,13 @@ where
                 }
             }
             "shutdown" => {
-                write_response(&mut write, &Response::ok("shutdown")).await?;
+                write_response(&mut write, &Response::ok("shutdown"), schema_version).await?;
                 daemon.request_shutdown();
                 return Ok(());
             }
             other => {
                 let error = AevanError::Config(format!("unknown command '{other}'"));
-                write_response(&mut write, &Response::error(other, &error)).await?;
+                write_response(&mut write, &Response::error(other, &error), schema_version).await?;
             }
         }
 
@@ -304,7 +348,12 @@ where
                 let error = AevanError::Config(format!(
                     "unknown log level '{name}' (use error, warn, info, debug or trace)"
                 ));
-                write_response(writer, &Response::error("logs", &error)).await?;
+                write_response(
+                    writer,
+                    &Response::error("logs", &error),
+                    request.schema_version,
+                )
+                .await?;
                 return Ok(true);
             }
         },
@@ -315,11 +364,16 @@ where
     let mut last_seq = 0;
     for record in daemon.logs().history(level) {
         last_seq = record.seq;
-        write_response(writer, &Response::record("logs", record)).await?;
+        write_response(
+            writer,
+            &Response::record("logs", record),
+            request.schema_version,
+        )
+        .await?;
     }
 
     if !request.follow {
-        write_response(writer, &Response::log_end("logs")).await?;
+        write_response(writer, &Response::log_end("logs"), request.schema_version).await?;
         return Ok(true);
     }
 
@@ -336,7 +390,12 @@ where
                     continue;
                 }
                 last_seq = record.seq;
-                write_response(writer, &Response::record("logs", record)).await?;
+                write_response(
+                    writer,
+                    &Response::record("logs", record),
+                    request.schema_version,
+                )
+                .await?;
             }
             Err(broadcast::error::RecvError::Lagged(skipped)) => {
                 tracing::debug!(skipped, "log follower lagged; resuming at the next record");
@@ -346,11 +405,17 @@ where
     }
 }
 
-async fn write_response<W>(writer: &mut W, response: &Response) -> io::Result<()>
+async fn write_response<W>(
+    writer: &mut W,
+    response: &Response,
+    schema_version: u32,
+) -> io::Result<()>
 where
     W: AsyncWrite + Unpin,
 {
-    let line = encode_line(response).map_err(io::Error::other)?;
+    let mut response = response.clone();
+    response.schema_version = schema_version;
+    let line = encode_line(&response).map_err(io::Error::other)?;
     writer.write_all(line.as_bytes()).await?;
     writer.flush().await
 }
@@ -618,6 +683,8 @@ mod tests {
     async fn a_connect_without_a_password_is_a_typed_config_error() {
         let mut request = Request::connect(
             None,
+            None,
+            None,
             "example_user".into(),
             crate::protocol::SecretString::new(""),
             None,
@@ -626,6 +693,120 @@ mod tests {
         let responses = round_trip(daemon("connect-missing"), &[request]).await;
         assert!(!responses[0].ok);
         assert_eq!(responses[0].exit_code, Some(1));
+    }
+
+    #[tokio::test]
+    async fn a_version_one_connect_resolves_the_profile_from_the_store() {
+        let dir = TempDir::new("v1-store");
+        let path = dir.0.join("profiles.toml");
+        let mut store = aevan_core::ProfileStore::default();
+        store
+            .upsert(
+                aevan_core::Profile::new(
+                    "example",
+                    "https://vpn.example.net/example_realm",
+                    "example_realm",
+                )
+                .expect("profile"),
+            )
+            .expect("upsert");
+        store.save(&path).expect("save store");
+
+        let daemon = Arc::new(Daemon::with_profile_store_path(
+            &dir.0,
+            LogHub::new(),
+            Some(path),
+        ));
+        let mut request = Request::connect(
+            Some("example".into()),
+            None,
+            None,
+            "example_user".into(),
+            crate::protocol::SecretString::new(""),
+            None,
+        );
+        request.schema_version = 1;
+
+        let responses = round_trip(daemon, &[request]).await;
+        let response = &responses[0];
+        assert!(!response.ok);
+        assert_eq!(response.schema_version, 1);
+        assert!(
+            response
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("password must not be empty")),
+            "the store lookup must have succeeded: {:?}",
+            response.error
+        );
+    }
+
+    #[tokio::test]
+    async fn a_version_two_connect_ignores_an_unreadable_store() {
+        // Point the fallback at a directory: loading it as a TOML file fails,
+        // so reaching the password check proves the store was never read.
+        let dir = TempDir::new("v2-store");
+        let unreadable = dir.0.join("profiles.toml");
+        std::fs::create_dir(&unreadable).expect("directory in place of a store");
+        let daemon = Arc::new(Daemon::with_profile_store_path(
+            &dir.0,
+            LogHub::new(),
+            Some(unreadable),
+        ));
+
+        let request = Request::connect(
+            Some("missing".into()),
+            Some("https://127.0.0.1:1/example_realm".into()),
+            Some("example_realm".into()),
+            "example_user".into(),
+            crate::protocol::SecretString::new(""),
+            None,
+        );
+
+        let responses = round_trip(daemon, &[request]).await;
+        let response = &responses[0];
+        assert!(!response.ok);
+        assert_eq!(response.schema_version, 2);
+        assert!(
+            response
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("password must not be empty")),
+            "the version-2 path must not consult the store: {:?}",
+            response.error
+        );
+    }
+
+    #[tokio::test]
+    async fn a_connect_without_gateway_or_realm_uses_the_store_and_fails_typed() {
+        let dir = TempDir::new("unknown-profile");
+        let store = dir.0.join("profiles.toml");
+        let daemon = Arc::new(Daemon::with_profile_store_path(
+            &dir.0,
+            LogHub::new(),
+            Some(store),
+        ));
+        let request = Request::connect(
+            Some("missing".into()),
+            None,
+            None,
+            "example_user".into(),
+            crate::protocol::SecretString::new("hunter2"),
+            None,
+        );
+
+        let responses = round_trip(daemon, &[request]).await;
+        let response = &responses[0];
+        assert!(!response.ok);
+        assert_eq!(response.exit_code, Some(1));
+        assert!(
+            response
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("profile 'missing' was not found")),
+            "{:?}",
+            response.error
+        );
     }
 
     #[tokio::test]
@@ -684,7 +865,8 @@ mod tests {
         let system = PathBuf::from("/Library/Application Support/Aevan/aevan.sock");
         let per_user = PathBuf::from("/Users/example/Library/Application Support/aevan/aevan.sock");
         assert_eq!(
-            ordered_candidates(Some(system.clone()), per_user.clone()),
+            ordered_candidates_optional(Some(system.clone()), Some(per_user.clone()))
+                .expect("both endpoints"),
             vec![system, per_user]
         );
     }
@@ -694,7 +876,8 @@ mod tests {
     fn the_system_endpoint_is_listed_once() {
         let system = PathBuf::from("/Library/Application Support/Aevan/aevan.sock");
         assert_eq!(
-            ordered_candidates(Some(system.clone()), system.clone()),
+            ordered_candidates_optional(Some(system.clone()), Some(system.clone()))
+                .expect("both endpoints"),
             vec![system]
         );
     }
@@ -722,6 +905,31 @@ mod tests {
             select_binding_endpoint(true, None, per_user.clone()),
             per_user
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_root_daemon_binds_without_a_resolvable_home() {
+        // launchd starts system daemons with no HOME. The binding endpoint must
+        // still resolve, or aevand exits 1 before it opens the socket.
+        let system = system_endpoint_path().expect("unix has a system endpoint here");
+        assert_eq!(endpoint_path_for_root(true).expect("root resolves"), system);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn candidates_survive_a_missing_per_user_endpoint() {
+        let system = PathBuf::from("/run/aevan/aevan.sock");
+        let only_system = ordered_candidates_optional(Some(system.clone()), None)
+            .expect("the system endpoint alone is enough");
+        assert_eq!(only_system, vec![system]);
+
+        let only_user =
+            ordered_candidates_optional(None, Some(PathBuf::from("/home/u/aevan.sock")))
+                .expect("the per-user endpoint alone is enough");
+        assert_eq!(only_user.len(), 1);
+
+        assert!(ordered_candidates_optional(None, None).is_err());
     }
 
     #[cfg(target_os = "macos")]

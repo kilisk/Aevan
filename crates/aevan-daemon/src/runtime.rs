@@ -35,11 +35,28 @@ pub struct Daemon {
     shutdown_requested: AtomicBool,
     shutdown: Notify,
     journal_path: PathBuf,
+    profile_store_path: Option<PathBuf>,
 }
 
 impl Daemon {
     /// Build a daemon for `config_dir`.
+    ///
+    /// The per-user profile store is resolved lazily for the version-1
+    /// fallback only. A root daemon usually has no profiles there and must
+    /// still start and serve version-2 requests.
     pub fn new(config_dir: &Path, logs: LogHub) -> Self {
+        Self::with_profile_store_path(config_dir, logs, ProfileStore::default_path().ok())
+    }
+
+    /// Build a daemon with an explicit profile-store path.
+    ///
+    /// Production uses [`Daemon::new`]; tests use this to simulate an absent or
+    /// unreadable store.
+    pub(crate) fn with_profile_store_path(
+        config_dir: &Path,
+        logs: LogHub,
+        profile_store_path: Option<PathBuf>,
+    ) -> Self {
         Self {
             status: Arc::new(SharedStatus::new()),
             logs,
@@ -47,6 +64,7 @@ impl Daemon {
             shutdown_requested: AtomicBool::new(false),
             shutdown: Notify::new(),
             journal_path: journal::journal_path(config_dir),
+            profile_store_path,
         }
     }
 
@@ -120,8 +138,35 @@ impl Daemon {
         Ok(report)
     }
 
-    fn select_profile(&self, name: Option<&str>) -> AevanResult<Profile> {
-        let store = ProfileStore::load(&ProfileStore::default_path()?)?;
+    /// Resolve the connection parameters for a request.
+    ///
+    /// A version-2 request carries `gateway_url` and `realm`, so the daemon
+    /// builds the profile from the request and never reads a per-user file.
+    /// Only a legacy request with neither field falls back to the store.
+    fn resolve_profile(
+        &self,
+        name: Option<&str>,
+        gateway_url: Option<&str>,
+        realm: Option<&str>,
+    ) -> AevanResult<Profile> {
+        match (gateway_url, realm) {
+            (Some(url), Some(realm)) => Profile::new(name.unwrap_or("direct"), url, realm),
+            (None, None) => self.select_profile_from_store(name),
+            _ => Err(AevanError::Config(
+                "the connect request must supply both gateway_url and realm, or neither".into(),
+            )),
+        }
+    }
+
+    /// Legacy version-1 lookup. Never reads another user's files.
+    fn select_profile_from_store(&self, name: Option<&str>) -> AevanResult<Profile> {
+        let path = self.profile_store_path.as_deref().ok_or_else(|| {
+            AevanError::Config(
+                "the profile store path cannot be resolved; the request carried no gateway_url and realm"
+                    .into(),
+            )
+        })?;
+        let store = ProfileStore::load(path)?;
         match name {
             Some(name) => store
                 .get(name)
@@ -140,11 +185,17 @@ impl Daemon {
     pub async fn connect(
         &self,
         profile_name: Option<String>,
+        gateway_url: Option<String>,
+        realm: Option<String>,
         username: Option<String>,
         password: Zeroizing<String>,
         token: Option<Zeroizing<String>>,
     ) -> AevanResult<StatusReport> {
-        let profile = self.select_profile(profile_name.as_deref())?;
+        let profile = self.resolve_profile(
+            profile_name.as_deref(),
+            gateway_url.as_deref(),
+            realm.as_deref(),
+        )?;
 
         // The guard is checked twice: here for a clear message, then inside
         // reserve_connect under one lock so a concurrent call cannot slip in.
