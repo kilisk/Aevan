@@ -107,9 +107,11 @@ pub fn start_daemon() -> Result<(), String> {
     match elevate::start_elevated(&executable, &[]) {
         StartOutcome::Started => client::wait_for_daemon(DAEMON_WAIT)
             .map_err(|error| format!("the daemon did not answer within 10 seconds: {error}")),
-        StartOutcome::Cancelled => {
-            Err("the in-VPN daemon needs Administrator; the prompt was cancelled".to_owned())
-        }
+        StartOutcome::Cancelled => Err(if cfg!(target_os = "macos") {
+            "the daemon needs administrator approval; the prompt was dismissed".to_owned()
+        } else {
+            "the in-VPN daemon needs Administrator; the prompt was cancelled".to_owned()
+        }),
         StartOutcome::Failed(message) => Err(message),
     }
 }

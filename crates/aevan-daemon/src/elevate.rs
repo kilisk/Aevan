@@ -170,7 +170,141 @@ mod imp {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+mod imp {
+    use std::ffi::OsStr;
+    use std::os::unix::fs::MetadataExt;
+    use std::path::Path;
+    use std::process::Command;
+
+    use super::StartOutcome;
+
+    /// Quote one argument for `/bin/sh` using single quotes.
+    fn posix_quote(value: &OsStr) -> String {
+        let text = value.to_string_lossy();
+        let mut quoted = String::with_capacity(text.len() + 2);
+        quoted.push('\'');
+        for character in text.chars() {
+            if character == '\'' {
+                quoted.push_str("'\\''");
+            } else {
+                quoted.push(character);
+            }
+        }
+        quoted.push('\'');
+        quoted
+    }
+
+    /// Quote a whole command line as an AppleScript string literal.
+    fn apple_script_quote(value: &str) -> String {
+        let mut quoted = String::with_capacity(value.len() + 2);
+        quoted.push('"');
+        for character in value.chars() {
+            match character {
+                '\\' => quoted.push_str("\\\\"),
+                '"' => quoted.push_str("\\\""),
+                _ => quoted.push(character),
+            }
+        }
+        quoted.push('"');
+        quoted
+    }
+
+    /// Build the shell command that starts the sibling daemon.
+    ///
+    /// The daemon runs as root because creating `utun` needs it, but the GUI
+    /// and CLI run as the installing user. Point the daemon at that user's
+    /// config directory and, once the socket exists, give the directory and
+    /// socket back to the user so the GUI can connect.
+    fn command_line(executable: &Path, args: &[&str]) -> String {
+        let config_dir = aevan_core::paths::config_dir().ok();
+        let mut command = String::new();
+        if let Some(dir) = config_dir.as_deref() {
+            command.push_str("AEVAN_CONFIG_DIR=");
+            command.push_str(&posix_quote(dir.as_os_str()));
+            command.push(' ');
+        }
+        command.push_str("/usr/bin/nohup ");
+        command.push_str(&posix_quote(executable.as_os_str()));
+        for argument in args {
+            command.push(' ');
+            command.push_str(&posix_quote(OsStr::new(argument)));
+        }
+        command.push_str(" </dev/null >/dev/null 2>&1 &");
+
+        if let (Some(dir), Some(home)) = (config_dir.as_deref(), std::env::var_os("HOME")) {
+            if let Ok(metadata) = std::fs::metadata(home) {
+                let socket = dir.join("aevan.sock");
+                command.push_str(&format!(
+                    " i=0; while [ $i -lt 50 ] && [ ! -S {} ]; do i=$((i+1)); /bin/sleep 0.1; done; /usr/bin/chown {} {} {} 2>/dev/null || true",
+                    posix_quote(socket.as_os_str()),
+                    metadata.uid(),
+                    posix_quote(dir.as_os_str()),
+                    posix_quote(socket.as_os_str()),
+                ));
+            }
+        }
+        command
+    }
+
+    pub fn start_elevated(executable: &Path, args: &[&str]) -> StartOutcome {
+        let command = command_line(executable, args);
+        let script = format!(
+            "do shell script {} with administrator privileges",
+            apple_script_quote(&command)
+        );
+
+        let output = match Command::new("/usr/bin/osascript")
+            .arg("-e")
+            .arg(&script)
+            .output()
+        {
+            Ok(output) => output,
+            Err(error) => {
+                return StartOutcome::Failed(format!(
+                    "could not run osascript to start {}: {error}",
+                    executable.display()
+                ));
+            }
+        };
+        if output.status.success() {
+            return StartOutcome::Started;
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let lowered = stderr.to_ascii_lowercase();
+        if lowered.contains("user canceled")
+            || lowered.contains("user cancelled")
+            || stderr.contains("(-128)")
+        {
+            StartOutcome::Cancelled
+        } else {
+            let detail = stderr.trim();
+            if detail.is_empty() {
+                StartOutcome::Failed(format!(
+                    "macOS could not start {} with administrator privileges",
+                    executable.display()
+                ))
+            } else {
+                StartOutcome::Failed(format!(
+                    "macOS could not start {} with administrator privileges: {detail}",
+                    executable.display()
+                ))
+            }
+        }
+    }
+
+    pub fn spawn_detached(executable: &Path) -> std::io::Result<()> {
+        std::process::Command::new(executable)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map(|_child| ())
+    }
+}
+
+#[cfg(all(not(windows), not(target_os = "macos")))]
 mod imp {
     use std::path::Path;
 
@@ -178,7 +312,7 @@ mod imp {
 
     pub fn start_elevated(executable: &Path, _args: &[&str]) -> StartOutcome {
         StartOutcome::Failed(format!(
-            "starting {} with Administrator is only implemented on Windows; start aevand with sudo",
+            "starting {} with Administrator is only implemented on Windows and macOS; start aevand with sudo",
             executable.display()
         ))
     }

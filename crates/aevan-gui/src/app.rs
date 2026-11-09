@@ -555,7 +555,7 @@ impl App {
                     text("Daemon unavailable").size(16).color(DANGER),
                     text(message).size(13),
                     text(
-                        "Start the daemon with `aevand` (elevated on Windows), or use the Administrator action below."
+                        "Start the daemon with `aevand` (elevated on Windows or macOS), or use the Administrator action below."
                     )
                     .size(13)
                     .color(MUTED),
@@ -801,7 +801,7 @@ impl App {
                     .push(text(message).size(13).color(DANGER))
                     .push(
                         text(
-                            "Start `aevand` (elevated on Windows), or use the Administrator action below.",
+                            "Start `aevand` (elevated on Windows or macOS), or use the Administrator action below.",
                         )
                         .size(12)
                         .color(MUTED),

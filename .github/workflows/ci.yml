@@ -219,6 +219,8 @@ jobs:
           test -f "$app/Contents/Resources/AppIcon.icns"
           echo "AppIcon.icns: present"
           "$app/Contents/MacOS/aevan-gui" --version
+          test -x "$app/Contents/MacOS/aevand"
+          "$app/Contents/MacOS/aevand" --version
           test -L "$mountpoint/Applications"
           echo "Applications symlink: $(readlink "$mountpoint/Applications")"
           test "$(readlink "$mountpoint/Applications")" = "/Applications"

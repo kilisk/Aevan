@@ -79,6 +79,9 @@ build_icon() {
 rm -rf "$STAGE" "$DIST/Aevan.app" "$DMG_STAGE" "$DMG"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 install -m 0755 "$BIN/aevan-gui" "$APP/Contents/MacOS/aevan-gui"
+# The drag-installed app must be self-sufficient: the GUI resolves aevand
+# beside its own executable instead of relying on /usr/local/bin.
+install -m 0755 "$BIN/aevand" "$APP/Contents/MacOS/aevand"
 sed "s/@VERSION@/$VERSION/g" \
     "$ROOT/packaging/macos/Info.plist.in" > "$APP/Contents/Info.plist"
 if ! build_icon "$APP/Contents/Resources"; then
