@@ -106,10 +106,24 @@ Per-OS commands:
   `netsh interface ipv4 delete route`, and DNS is restored with
   `set dnsservers ... source=dhcp`.
 * **Linux** — `ip addr add|del`, `ip link set dev ... mtu`, `ip route add|del`.
-  systemd-resolved/resolvconf DNS integration is an explicit TODO; the applier
-  returns a typed `Unsupported` instead of pretending DNS was changed.
-* **macOS** — `ifconfig utunN`, `route -n add|delete`. `scutil` DNS integration
-  is an explicit TODO and is likewise refused.
+  DNS is manager-dependent and the manager is chosen once when the change is
+  applied, then recorded in the journal so revert uses the same mechanism:
+  `resolvectl dns <link> ...` + `resolvectl domain <link> ~.` with revert
+  `resolvectl revert <link>` when systemd-resolved is live; otherwise
+  `resolvconf -a <link>` fed a `nameserver` block on stdin with revert
+  `resolvconf -d <link>`; otherwise a one-time
+  `/etc/resolv.conf.aevan.bak` backup and a managed `/etc/resolv.conf`, with
+  revert restoring the backup byte-for-byte. An existing backup from a crashed
+  run is reused, not overwritten.
+* **macOS** — `ifconfig utunN`, `route -n add|delete`. DNS uses
+  `networksetup -setdnsservers <service> ...` on the primary service
+  (`route -n get default` → `networksetup -listnetworkserviceorder`, first
+  enabled service as fallback). The previous servers and service name are
+  journaled; revert restores them or uses `Empty` when there were none.
+  `dscacheutil -flushcache` and `killall -HUP mDNSResponder` follow both apply
+  and revert, and a flush failure is only a warning. This is **interface-wide**
+  DNS, not per-domain split DNS, because the gateway does not push search
+  domains.
 
 Argument vectors are passed to the program directly. No shell is involved and
 no argument is concatenated into a command string.
@@ -396,7 +410,7 @@ server-driven path.
 | 0 | dry run printed the plan, or Ctrl+C shut down cleanly |
 | 4 | TLS/network failure, ESP socket failure, or unresponsive ESP peer |
 | 6 | privilege check refused the applier or adapter |
-| 7 | handshake status byte, undecodable KMP 301, missing ESP material, unimplemented DNS backend, or ESP packet-layer rejection |
+| 7 | handshake status byte, undecodable KMP 301, missing ESP material, or ESP packet-layer rejection |
 
 ## Verified against the live gateway (2026-11-04)
 
