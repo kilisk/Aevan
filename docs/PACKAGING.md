@@ -7,14 +7,19 @@ paths.
 This document describes how the release artifacts are built, what they
 contain, how the version is bumped, and which parts are **not** tested.
 
-The Windows package is a WiX Toolset v7 MSI built with `wix build` (the v4+
-command-line syntax, not WiX v3 `candle`/`light`). There is no `makensis`, Inno
-Setup or Chocolatey dependency.
+The release now has seven downloadable artifacts: the Windows MSI and portable
+zip, the macOS universal `.pkg` and its Homebrew cask, and the Linux tarball,
+`.deb` and `.rpm`. The Windows package is a WiX Toolset v7 MSI built with
+`wix build` (the v4+ command-line syntax, not WiX v3 `candle`/`light`). There is
+no `makensis`, Inno Setup or Chocolatey dependency.
 
 ## Prerequisites
 
 - Rust stable with `cargo` and `rustfmt`/`clippy` for the preferred checks
-- `just` (the recipes use bash on every platform; on Windows that is Git Bash)
+- `just` (the recipes use bash on every platform; on Windows that is Git Bash).
+  CI installs the pinned `just 1.59.0` with `cargo install --locked`.
+- `dpkg-deb` (the `dpkg` package on Debian/Ubuntu) to build the `.deb`
+- `rpmbuild` (the `rpm` package on Debian/Ubuntu) to build the `.rpm`
 - WiX Toolset v7, for example:
   ```bat
   dotnet tool install --global wix --version 7.0.1
@@ -76,8 +81,9 @@ the `Cargo.lock` entries. The `justfile` parses the same line:
 version := trim(`sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1`)
 ```
 
-and uses it for `aevan-<version>-x64.msi`, `aevan-<version>-x64.zip` and
-`aevan-<version>-x86_64-linux.tar.gz`.
+and uses it for `aevan-<version>-x64.msi`, `aevan-<version>-x64.zip`,
+`aevan-<version>-arm64+x86_64.pkg`, `aevan-<version>-x86_64-linux.tar.gz`,
+`aevan_<version>_amd64.deb` and `aevan-<version>-1.x86_64.rpm`.
 
 The MSI `ProductVersion` is that string. Windows Installer requires a numeric
 `major.minor.patch`; `just dist-windows` refuses to build a version with a
@@ -104,8 +110,18 @@ just fetch-wintun
 just dist-windows
 ```
 
-`just dist` dispatches to `dist-windows` on Windows and `dist-linux` elsewhere.
-`dist-windows` runs `cargo build --release` and then the equivalent of:
+On Linux, the same three binary artifacts plus the two distribution packages
+are built with:
+
+```sh
+just dist-linux
+just deb
+just rpm
+```
+
+`just dist` dispatches to `dist-windows` on Windows, `dist-macos` on macOS and
+`dist-linux` elsewhere. `dist-windows` runs `cargo build --release` and then the
+equivalent of:
 
 ```text
 wix build -arch x64 -d Version=0.2.0 -d BinDir=target/release ^
@@ -224,7 +240,7 @@ unsigned and not notarised; Gatekeeper will warn.
 
 `just dist-linux` builds the three release binaries and writes
 `aevan-<version>-x86_64-linux.tar.gz` containing the binaries, `aevand.service`,
-`install.sh`, `uninstall.sh`, `share/applications/aevan.desktop`,
+`install.sh`, `uninstall.sh`, `copyright`, `share/applications/aevan.desktop`,
 `share/icons/hicolor/{64x64,128x128,256x256,512x512}/apps/aevan.png`, license
 files and README. It runs in the CI `package-linux` job. `install.sh` copies
 the binaries to `/usr/local/bin`, installs the unit, the PNGs and the desktop
@@ -232,27 +248,110 @@ entry (and never runs `gtk-update-icon-cache`), but leaves the service disabled
 unless `--enable` is passed. `uninstall.sh` reverses that and keeps
 `~/.config/aevan` unless `--purge` is passed.
 
-`just deb` and `just rpm` are **skeletons** driven by the same version
-substitution. Their templates are `packaging/linux/control.in` and
-`packaging/linux/aevan.spec`. They require `dpkg-deb` / `rpmbuild`, refuse to
-run without them, and have not been built or installed on this host.
+#### Debian package
+
+`just deb` builds `aevan_<version>_amd64.deb` with `dpkg-deb` alone; there is no
+debhelper, lintian or dh_* dependency. The data tree is:
+
+```text
+/usr/bin/aevan
+/usr/bin/aevand
+/usr/bin/aevan-gui
+/lib/systemd/system/aevand.service
+/usr/share/applications/aevan.desktop
+/usr/share/icons/hicolor/64x64/apps/aevan.png
+/usr/share/icons/hicolor/128x128/apps/aevan.png
+/usr/share/icons/hicolor/256x256/apps/aevan.png
+/usr/share/icons/hicolor/512x512/apps/aevan.png
+/usr/share/doc/aevan/README
+/usr/share/doc/aevan/copyright
+/usr/share/doc/aevan/LICENSE
+/usr/share/doc/aevan/LICENSE-APACHE
+/usr/share/doc/aevan/LICENSE-MIT
+```
+
+The control file is generated from `packaging/linux/control.in`:
+`Architecture: amd64`, `Section: net`, `Priority: optional`,
+`Depends: libc6, hicolor-icon-theme, systemd`, and the project maintainer
+address. There are no conffiles. `postinst` runs `systemctl daemon-reload` but
+does **not** enable or start `aevand.service`. `prerm` stops the unit only if it
+is already enabled.
+
+#### RPM package
+
+`just rpm` runs `rpmbuild` on the same release tarball and produces
+`aevan-<version>-1.x86_64.rpm`. The spec is
+`packaging/linux/aevan.spec`. It installs the same file set as the `.deb`
+(binaries, unit, desktop entry, icons, README, copyright and licenses),
+declares `License: MIT OR Apache-2.0`, and requires `glibc`,
+`hicolor-icon-theme` and `systemd`. `%post` only runs `systemctl daemon-reload`;
+`%preun` stops `aevand.service` only if it is enabled. Neither enables or starts
+the unit.
+
+### Homebrew cask
+
+[Casks/aevan.rb](../Casks/aevan.rb) is a cask, not a formula. It installs the
+published macOS `.pkg` by URL and verifies the release asset's SHA-256. See
+[docs/HOMEBREW.md](HOMEBREW.md) for the tap-less install
+(`brew install --cask ./Casks/aevan.rb`) and for how to publish a tap later.
+There is no tap repository today.
 
 ## CI
 
 `.github/workflows/ci.yml` keeps the existing `test` matrix (Ubuntu, Windows,
 `macos-latest`) and adds:
 
-- `package-windows`: `needs: test`, installs Rust, `just` and WiX v7, accepts
-  the OSMF EULA, fetches Wintun, runs `just dist-windows`, validates the MSI
-  and uploads `target/dist/*.msi` and `*.zip` as `aevan-windows-x64`.
+- `package-windows`: `needs: test`, installs Rust, pinned `just` and WiX v7,
+  accepts the OSMF EULA, fetches Wintun, runs `just dist-windows`, validates the
+  MSI and uploads `target/dist/*.msi` and `*.zip` as `aevan-windows-x64`.
 - `package-macos`: `needs: test`, runs `just dist-macos` on `macos-latest` and
   uploads `target/dist/*.pkg` plus `target/dist/Aevan.app` as
   `aevan-macos-universal`.
-- `package-linux`: `needs: test`, runs `just dist-linux` and uploads the tar as
-  `aevan-linux-x64`.
+- `package-linux`: `needs: test`, installs the pinned `just` and the `rpm`
+  package, runs `just dist-linux`, `just deb` and `just rpm`, inspects the
+  `.deb` with `dpkg-deb --info/--contents` and the `.rpm` with
+  `rpm -qip/-qlp` (including path assertions), and uploads the tar, `.deb` and
+  `.rpm` as `aevan-linux-x64`.
 
 The packaging jobs do not publish or sign anything; they upload workflow
-artifacts.
+artifacts. The pinned `just` is installed with
+`cargo install just --version 1.59.0 --locked` in a retry loop; no job fetches
+an unversioned "latest" tool.
+
+## Artifact status
+
+Every artifact below is built by CI. Only the MSI, `.deb` and `.rpm` are also
+inspected there. **No artifact has been installed on a clean machine**, and no
+installer has been installed, upgraded or uninstalled by a user. CI inspection
+proves package structure, not installation or runtime behaviour.
+
+| Artifact | CI build | CI inspection | Installed on a clean machine |
+| --- | --- | --- | --- |
+| `aevan-<version>-x64.msi` | yes | `wix msi validate` | no |
+| `aevan-<version>-x64.zip` | yes | no (binary VERSIONINFO only) | no |
+| `aevan-<version>-arm64+x86_64.pkg` | yes | not inspected | no |
+| `aevan-<version>-x86_64-linux.tar.gz` | yes | not inspected | no |
+| `aevan_<version>_amd64.deb` | yes | `dpkg-deb --info/--contents` and path assertions | no |
+| `aevan-<version>-1.x86_64.rpm` | yes | `rpm -qip/-qlp` and path assertions | no |
+| `Casks/aevan.rb` | not built | not inspected | no (`brew install` never run) |
+
+## Release process
+
+1. Bump `[workspace.package] version` in `Cargo.toml`, commit, and tag the
+   release. The `.deb` and `.rpm` names follow that one version.
+2. Run CI and download the `aevan-windows-x64`, `aevan-macos-universal` and
+   `aevan-linux-x64` workflow artifacts.
+3. Create the GitHub release and attach **all** of these files:
+   `aevan-<version>-x64.msi`, `aevan-<version>-x64.zip`,
+   `aevan-<version>-arm64+x86_64.pkg`, `aevan-<version>-x86_64-linux.tar.gz`,
+   `aevan_<version>_amd64.deb` and `aevan-<version>-1.x86_64.rpm`.
+4. Publish `SHA256SUMS.txt` alongside them. The just recipes print each
+   Linux artifact's sum; use `sha256sum`/`shasum -a 256` for the rest.
+5. Copy [docs/RELEASE-NOTES-TEMPLATE.md](RELEASE-NOTES-TEMPLATE.md) to
+   `docs/RELEASE-NOTES-<version>.md` and fill in the changes, including the new
+   `.deb`, `.rpm` and cask downloads.
+6. Update `version` and `sha256` in `Casks/aevan.rb` from the published `.pkg`
+   asset, as described in [docs/HOMEBREW.md](HOMEBREW.md).
 
 ## What is not tested
 
@@ -263,16 +362,25 @@ Be explicit about this when handing the build to someone:
   rollback, the scheduled-task custom actions, the `aevan shutdown` action and
   the uninstall recovery action were not exercised here. `wix msi validate`
   checks the database structure, not runtime behaviour.
+- **The portable zip has not been extracted and run from the archive on a clean
+  machine.**
 - **The Linux tarball is built by CI, not by the Windows build host.** It has
   not been installed or run from the archive in this environment.
 - **The macOS universal `.app`/`.pkg` is built only by CI.** It could not be
   cross-compiled on the Windows host (no Apple SDK); CI compiles and packages
   it with `macos-latest`. The `actool`/`iconutil` icon path can therefore only
-  be proven in CI.
-- **The `.deb` and `.rpm` recipes are untested skeletons.** They have not been
-  built on this host and their dependency lists are incomplete (for example
-  `aevan-gui` needs a working wgpu/Wayland or X11 stack, and the daemon needs
-  permission to create `/dev/net/tun`).
+  be proven in CI. The package has never been installed on a clean Mac.
+- **The `.deb` and `.rpm` are now built in CI, but they have never been
+  installed by anyone.** CI is their first real build and its `dpkg-deb` /
+  `rpm -qip/-qlp` checks prove package structure only. The recipes cannot be
+  built on the Windows development host (no `dpkg-deb` or `rpmbuild`), so local
+  inspection is limited to the file tree and metadata templates. Their
+  dependency lists are deliberately minimal: the packages declare `libc6`,
+  `hicolor-icon-theme` and `systemd` (or the RPM equivalents) but not the
+  wgpu/Wayland/X11 stack the GUI uses or the `/dev/net/tun` permission the
+  daemon needs.
+- **The Homebrew cask has never been installed.** It is a checked-in Ruby file
+  pointing at the published `.pkg`; CI does not run `brew`.
 - **Nothing is code-signed.** Windows SmartScreen and macOS Gatekeeper will
   warn; the MSI is not Authenticode-signed and there is no notarization.
 - **The MSI does not install a Windows service.** That is intentional, not a

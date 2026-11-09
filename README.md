@@ -20,8 +20,9 @@ protocol is described in [docs/PROTOCOL.md](docs/PROTOCOL.md).
 - A privileged daemon (`aevand`) with a local control endpoint, crash-recovery
   journal and explicit elevation at launch.
 - A native GUI with a tray/menu-bar item.
-- Installers: a Windows MSI and portable zip, a macOS universal `.pkg`, and a
-  Linux tarball.
+- Installers: a Windows MSI and portable zip, a macOS universal `.pkg` (also
+  installable with the included Homebrew cask), and a Linux tarball plus
+  `.deb` and `.rpm` packages.
 
 ## What does not work
 
@@ -55,13 +56,17 @@ protocol is described in [docs/PROTOCOL.md](docs/PROTOCOL.md).
 
 Windows: use `aevan-<version>-x64.msi` (per-machine, Administrator) or the
 portable `aevan-<version>-x64.zip`. macOS: use
-`aevan-<version>-arm64+x86_64.pkg` (universal, unsigned, `sudo`). Linux: use
-`aevan-<version>-x86_64-linux.tar.gz` and its `install.sh`.
+`aevan-<version>-arm64+x86_64.pkg` (universal, unsigned, `sudo`), or
+`brew install --cask ./Casks/aevan.rb` from a checkout. Linux: use
+`aevan-<version>-x86_64-linux.tar.gz` and its `install.sh`, or the
+`aevan_<version>_amd64.deb` / `aevan-<version>-1.x86_64.rpm` package.
 
-The packages are unsigned. See [docs/INSTALL.md](docs/INSTALL.md) for
-privileges, install locations, tray availability, uninstall commands and the
-macOS Gatekeeper workaround, and [docs/PACKAGING.md](docs/PACKAGING.md) to build
-the artifacts yourself.
+The packages are unsigned. The `.deb` and `.rpm` are built and inspected in
+CI, but no installer has been installed on a clean machine. See
+[docs/INSTALL.md](docs/INSTALL.md) for privileges, install locations, tray
+availability, uninstall commands and the macOS Gatekeeper workaround,
+[docs/PACKAGING.md](docs/PACKAGING.md) to build the artifacts yourself, and
+[docs/HOMEBREW.md](docs/HOMEBREW.md) for the cask.
 
 ## Add a profile
 

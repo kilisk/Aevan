@@ -4,8 +4,9 @@
 `aevan`, `aevand` and `aevan-gui`; the crates, control pipe, scheduled task and
 systemd unit use the `aevan` names.
 
-Aevan ships as one Windows MSI, one macOS universal package and one Linux
-tarball. The CLI, daemon and GUI are the same three binaries in every package:
+Aevan ships as a Windows MSI and portable zip, a macOS universal package and
+Homebrew cask, and a Linux tarball, Debian package and RPM. The CLI, daemon and
+GUI are the same three binaries in every package:
 
 | Binary | Purpose |
 | --- | --- |
@@ -14,7 +15,7 @@ tarball. The CLI, daemon and GUI are the same three binaries in every package:
 | `aevan-gui` (`aevan-gui.exe`) | native GUI; a daemon client, never authenticates itself |
 | `wintun.dll` (Windows only) | signed WireGuard LLC L3 driver library used by `aevand` |
 
-Version 0.2.0 is the current build.
+Version 0.2.2 is the current build.
 
 ## Package matrix
 
@@ -23,11 +24,31 @@ Version 0.2.0 is the current build.
 | Windows 10/11 x64 | `aevan-<version>-x64.msi` | `msiexec` | Yes, for the MSI | `C:\Program Files\aevan`, system `PATH`, Start menu shortcut |
 | Windows 10/11 x64 | `aevan-<version>-x64.zip` | extract | No | the directory you extract |
 | macOS 11+ (arm64 + x86_64) | `aevan-<version>-arm64+x86_64.pkg` | `installer` / double-click | Yes (`sudo`) | `/Applications/Aevan.app`, `/usr/local/bin`, `/Library/LaunchDaemons` |
+| macOS 11+ (Homebrew) | `Casks/aevan.rb` | `brew install --cask` | Yes (`sudo`, for the `.pkg` payload) | same as the `.pkg` |
 | Linux x86_64 | `aevan-<version>-x86_64-linux.tar.gz` | `install.sh` | Yes (`sudo`) | `/usr/local/bin`, `/etc/systemd/system` |
+| Debian/Ubuntu amd64 | `aevan_<version>_amd64.deb` | `apt` / `dpkg` | Yes (`sudo`) | `/usr/bin`, `/lib/systemd/system`, `/usr/share` |
+| Fedora/RHEL x86_64 | `aevan-<version>-1.x86_64.rpm` | `dnf` / `rpm` | Yes (`sudo`) | `/usr/bin`, `/lib/systemd/system`, `/usr/share` |
 
 The macOS package is **unsigned and not notarised**, and nothing in this
 repository is code-signed. Gatekeeper and Windows SmartScreen will warn. The
 macOS steps to open an unsigned package are in the macOS section below.
+
+## Artifact status
+
+Every artifact is built by CI. Only the MSI, `.deb` and `.rpm` are also
+inspected there. **No artifact has been installed on a clean machine.** The
+`.deb` and `.rpm` are now built in CI, but they have never been installed by
+anyone; their CI checks are structural only.
+
+| Artifact | Built in CI | Inspected in CI | Installed on a clean machine |
+| --- | --- | --- | --- |
+| `aevan-<version>-x64.msi` | yes | yes (`wix msi validate`) | no |
+| `aevan-<version>-x64.zip` | yes | no (binary VERSIONINFO only) | no |
+| `aevan-<version>-arm64+x86_64.pkg` | yes | no | no |
+| `aevan-<version>-x86_64-linux.tar.gz` | yes | no | no |
+| `aevan_<version>_amd64.deb` | yes | yes (`dpkg-deb`) | no |
+| `aevan-<version>-1.x86_64.rpm` | yes | yes (`rpm -qip/-qlp`) | no |
+| `Casks/aevan.rb` | not built | no | no |
 
 ## Tray / menu-bar availability
 
@@ -305,6 +326,24 @@ removes both for the invoking user and for root.
 
 ---
 
+## Homebrew cask (macOS, tap-less)
+
+The repository ships a cask at [Casks/aevan.rb](../Casks/aevan.rb). It installs
+the same `.pkg` described above, after verifying the published asset's SHA-256.
+From a checkout of this repository:
+
+```sh
+brew install --cask ./Casks/aevan.rb
+```
+
+The `./` is required. This is a cask rather than a formula because the macOS
+artifact is a signed-format `.pkg`, not a source build. There is no tap
+repository; [docs/HOMEBREW.md](HOMEBREW.md) explains the tap-less workflow,
+how to update the cask for a release, and how to publish a tap later. The cask
+has never been installed by anyone, and the `.pkg` it installs is unsigned.
+
+---
+
 ## Linux tarball
 
 Requirements: Linux x86_64 and `sudo`. The tarball contains:
@@ -383,6 +422,88 @@ Unless `--purge` is passed it keeps `~/.config/aevan` (your profiles).
 
 ---
 
+## Debian / Ubuntu package
+
+Requirements: Debian or Ubuntu on amd64 and `sudo`. The `.deb` is built and
+inspected in CI with `dpkg-deb`, but it has **never been installed by anyone**;
+treat the steps below as unproven until you have run them on a clean machine.
+
+```sh
+sudo apt install ./aevan_<version>_amd64.deb
+```
+
+or, without resolving dependencies:
+
+```sh
+sudo dpkg -i aevan_<version>_amd64.deb
+```
+
+The package installs the same three binaries and integration files as the
+tarball, but under distribution paths:
+
+| Path | Contents |
+| --- | --- |
+| `/usr/bin/aevan`, `/usr/bin/aevand`, `/usr/bin/aevan-gui` | binaries |
+| `/lib/systemd/system/aevand.service` | systemd unit |
+| `/usr/share/applications/aevan.desktop` | desktop entry |
+| `/usr/share/icons/hicolor/*/apps/aevan.png` | 64/128/256/512 px icons |
+| `/usr/share/doc/aevan/` | README, copyright and licences |
+
+The package declares `Depends: libc6, hicolor-icon-theme, systemd`. Its
+`postinst` runs `systemctl daemon-reload` but does **not** enable or start
+`aevand.service`; enabling it is the same explicit step as for the tarball:
+
+```sh
+sudo systemctl enable --now aevand.service
+```
+
+`prerm` stops the unit only if it is already enabled. The unit runs `aevand` as
+`root` with `HOME=/root`, so its profile store is `/root/.config/aevan`.
+
+Remove the package with:
+
+```sh
+sudo apt remove aevan
+```
+
+That keeps the profile store. Purge the package and remove `/root/.config/aevan`
+if you also want to discard the daemon's profiles.
+
+---
+
+## Fedora / RHEL package
+
+Requirements: a Fedora/RHEL-family distribution on x86_64 and `sudo`. The
+`.rpm` is built and inspected in CI with `rpmbuild` (`rpm -qip`/`rpm -qlp`), but
+it has **never been installed by anyone**; treat the steps below as unproven
+until you have run them on a clean machine.
+
+```sh
+sudo dnf install ./aevan-<version>-1.x86_64.rpm
+```
+
+or:
+
+```sh
+sudo rpm -i aevan-<version>-1.x86_64.rpm
+```
+
+It installs the same file set as the `.deb`: `/usr/bin/{aevan,aevand,aevan-gui}`,
+`/lib/systemd/system/aevand.service`, `/usr/share/applications/aevan.desktop`,
+the hicolor icons and `/usr/share/doc/aevan/`. Its `%post` only runs
+`systemctl daemon-reload`; `%preun` stops an already-enabled unit. It does not
+enable or start `aevand.service`.
+
+Remove it with:
+
+```sh
+sudo dnf remove aevan
+```
+
+The profile store is kept.
+
+---
+
 ## What needs Administrator or sudo and why
 
 | Action | Windows | macOS / Linux | Why |
@@ -453,4 +574,7 @@ purge:
 | --- | --- | --- |
 | Windows | `%APPDATA%\aevan` | `rmdir /s /q "%APPDATA%\aevan"` |
 | macOS | `~/Library/Application Support/aevan` (and `~/.config/aevan`) | `sudo /usr/local/bin/aevan-uninstall --purge` |
+| macOS (Homebrew cask) | same as macOS | run `sudo /usr/local/bin/aevan-uninstall --purge` before `brew uninstall --cask aevan` |
 | Linux | `~/.config/aevan` (the root service store is `/root/.config/aevan`) | `sudo ./uninstall.sh --purge` |
+| Debian/Ubuntu (`.deb`) | `~/.config/aevan` and `/root/.config/aevan` | `sudo rm -rf /root/.config/aevan ~/.config/aevan` |
+| Fedora/RHEL (`.rpm`) | `~/.config/aevan` and `/root/.config/aevan` | `sudo rm -rf /root/.config/aevan ~/.config/aevan` |
