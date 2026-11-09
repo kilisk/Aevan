@@ -1,9 +1,20 @@
 //! Per-OS TUN backends.
 //!
-//! M0 ships only typed stubs: `open` returns [`crate::TunError::Unsupported`]
-//! and `probe` reports honestly whether the platform prerequisite is present.
-//! There is no `todo!()` and no implicit privilege escalation. The real
-//! implementations land in M2 behind the same [`crate::Device`] trait.
+//! All three supported platforms now have a real device backend behind the
+//! same [`crate::Device`] trait:
+//!
+//! * Windows uses `wintun.dll` and returns its read-wait event from
+//!   [`crate::Device::wait_handle`].
+//! * macOS opens a `utun` control socket and frames each packet with a 4-byte
+//!   address-family header.
+//! * Linux opens `/dev/net/tun` with `IFF_NO_PI`, so packets are raw IP.
+//!
+//! macOS and Linux need root to create the interface; `probe` reports the
+//! prerequisite honestly and `open` returns a typed
+//! [`crate::TunError::Permission`] instead of elevating. There is no `todo!()`
+//! and no implicit privilege escalation. A full end-to-end tunnel on macOS and
+//! Linux still needs a human on real hardware; CI proves only that the device
+//! opens by running the `tun_smoke` example under `sudo`.
 
 use std::io;
 use std::time::Duration;
@@ -70,7 +81,8 @@ pub fn probe() -> Availability {
 
 /// Open the current platform's L3 backend.
 ///
-/// At M0 this always fails with [`TunError::Unsupported`].
+/// macOS and Linux return [`TunError::Permission`] when the process is not
+/// root; Linux returns [`TunError::Unsupported`] when `/dev/net/tun` is absent.
 pub fn open(config: DeviceConfig) -> Result<Box<dyn Device>, TunError> {
     imp::open(config)
 }
@@ -98,11 +110,15 @@ use windows as imp;
 mod macos;
 #[cfg(target_os = "macos")]
 use macos as imp;
+#[cfg(target_os = "macos")]
+pub use macos::UtunDevice;
 
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
 use linux as imp;
+#[cfg(target_os = "linux")]
+pub use linux::LinuxTunDevice;
 
 #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
 mod other;
