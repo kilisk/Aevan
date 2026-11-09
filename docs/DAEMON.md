@@ -69,9 +69,11 @@ code 5.
 
 ## Protocol
 
-* Version 1, JSON, one request per line and one response per line.
-* Every response carries `schema_version` (currently `1`).
-* A daemon that receives another version answers with exit code `7`
+* Version 2, JSON, one request per line and one response per line.
+* Every response carries `schema_version` (currently `2`). A daemon accepts
+  both version 1 and version 2 requests and answers in the request's version, so
+  an older client still understands the response.
+* A daemon that receives any other version answers with exit code `7`
   (unsupported) and does not execute the request.
 * The request line limit is 64 KiB.
 * `logs` is the only command that returns more than one response line: one line
@@ -84,23 +86,33 @@ Common fields:
 
 | field | type | meaning |
 |---|---|---|
-| `schema_version` | number | must be `1` |
+| `schema_version` | number | `1` or `2` (version 2 is current) |
 | `command` | string | `status`, `connect`, `disconnect`, `recover`, `logs`, `shutdown` |
 
-`connect`:
+`connect` (version 2):
 
 ```json
-{"schema_version":1,"command":"connect","profile":"example","username":"example_user","password":"...","token":"..."}
+{"schema_version":2,"command":"connect","profile":"example","gateway_url":"https://vpn.example.net/example_realm","realm":"example_realm","username":"example_user","password":"...","token":"..."}
 ```
+
+`gateway_url` and `realm` are optional. When both are present the daemon builds
+the connection from the request; `profile` is then only a display name for
+status and logs. When both are absent the daemon uses the legacy version-1
+lookup in its own profile store (and `profile` selects the entry, defaulting to
+the store default). Supplying only one of the two is a typed configuration
+error. The new fields are not secret, but are not logged at info level.
 
 `password` is required. `token` is optional; when the gateway asks for a token
 and none was supplied, the daemon returns exit code 2 rather than retrying or
-prompting. `profile` is optional and falls back to the default profile.
+prompting.
+
+The CLI and GUI resolve the profile from the user's own store and send the
+version-2 fields, so a root LaunchDaemon never needs a per-user profile file.
 
 `disconnect`:
 
 ```json
-{"schema_version":1,"command":"disconnect","profile":"example","all":false}
+{"schema_version":2,"command":"disconnect","profile":"example","all":false}
 ```
 
 `all` is accepted for the CLI contract; M3 has one tunnel.
@@ -108,7 +120,7 @@ prompting. `profile` is optional and falls back to the default profile.
 `recover`:
 
 ```json
-{"schema_version":1,"command":"recover"}
+{"schema_version":2,"command":"recover"}
 ```
 
 This re-runs crash recovery (the same operation as `aevan reset`) and answers
@@ -119,7 +131,7 @@ then describes that live connection.
 `logs`:
 
 ```json
-{"schema_version":1,"command":"logs","follow":false,"level":"info"}
+{"schema_version":2,"command":"logs","follow":false,"level":"info"}
 ```
 
 `level` is `error`, `warn`, `info`, `debug` or `trace` and defaults to `info`.
@@ -127,13 +139,13 @@ then describes that live connection.
 `status`:
 
 ```json
-{"schema_version":1,"command":"status"}
+{"schema_version":2,"command":"status"}
 ```
 
 `shutdown`:
 
 ```json
-{"schema_version":1,"command":"shutdown"}
+{"schema_version":2,"command":"shutdown"}
 ```
 
 The daemon answers, then stops accepting connections, signals a live tunnel and
@@ -144,19 +156,19 @@ waits for teardown.
 Success:
 
 ```json
-{"schema_version":1,"ok":true,"command":"status","status":{"state":"connected","profile":"example","device":"aevan","address":"10.20.0.10","prefix_len":32,"mtu":1396,"route_count":4,"dns":["10.20.0.53","10.20.0.54"],"bytes_in":0,"bytes_out":0,"uptime_secs":12}}
+{"schema_version":2,"ok":true,"command":"status","status":{"state":"connected","profile":"example","device":"aevan","address":"10.20.0.10","prefix_len":32,"mtu":1396,"route_count":4,"dns":["10.20.0.53","10.20.0.54"],"bytes_in":0,"bytes_out":0,"uptime_secs":12}}
 ```
 
 Failure:
 
 ```json
-{"schema_version":1,"ok":false,"command":"connect","error":"authentication rejected: ...","exit_code":3}
+{"schema_version":2,"ok":false,"command":"connect","error":"authentication rejected: ...","exit_code":3}
 ```
 
 Log record:
 
 ```json
-{"schema_version":1,"ok":true,"command":"logs","record":{"seq":7,"timestamp_unix":1762300000,"level":"info","target":"aevan_daemon::runtime","message":"..."}}
+{"schema_version":2,"ok":true,"command":"logs","record":{"seq":7,"timestamp_unix":1762300000,"level":"info","target":"aevan_daemon::runtime","message":"..."}}
 ```
 
 `status` reports the state, profile, device, assigned address/prefix, MTU, route
