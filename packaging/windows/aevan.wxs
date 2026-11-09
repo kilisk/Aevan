@@ -8,12 +8,12 @@
   installing user's SID. See docs/INSTALL.md.
 
   Build (WiX v7):
-    wix build -arch x64 -d Version=0.2.0 -d BinDir=target/release \
+    wix build -arch x64 -d Version=<from Cargo.toml> -d BinDir=target/release \
       -d IconPath=assets/branding/Aevan-1024.ico \
       -d LicensePath=LICENSE -d MitLicensePath=LICENSE-MIT \
       -d ApacheLicensePath=LICENSE-APACHE \
       -d WintunLicensePath=packaging/legal/LICENSE-WINTUN.txt \
-      -o target/dist/aevan-0.2.0-x64.msi packaging/windows/aevan.wxs
+      -o target/dist/aevan-<version>-x64.msi packaging/windows/aevan.wxs
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <Package
