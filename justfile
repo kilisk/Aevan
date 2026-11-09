@@ -205,13 +205,17 @@ deb: build
     install -m 0644 README.md "$stage/usr/share/doc/aevan/README"; \
     install -m 0644 packaging/linux/copyright "$stage/usr/share/doc/aevan/copyright"; \
     install -m 0644 LICENSE LICENSE-APACHE LICENSE-MIT "$stage/usr/share/doc/aevan/"; \
-    dpkg-deb --build --root-owner-group "$stage" {{deb_pkg}}
+    dpkg-deb -Zgzip --build --root-owner-group "$stage" {{deb_pkg}}
     @echo ""
     @echo "artifact:"
     @ls -lh {{deb_pkg}}
     @echo ""
     sha256sum {{deb_pkg}}
 
+# The .deb is built with gzip, not the default zstd: `dpkg-deb --info` shells out to
+# `tar`, and some CI images ship a tar without zstd support, which fails with
+# "tar subprocess failed with exit status 2" on a package that installs fine.
+# gzip is readable by every dpkg and tar in use, at a small size cost.
 # RPM built with rpmbuild from the release tarball. It installs the same file
 # set as the .deb: binaries, unit, desktop entry, icons and docs. The unit is
 # installed but not enabled or started; %post only reloads systemd and %preun
