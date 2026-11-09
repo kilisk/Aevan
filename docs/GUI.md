@@ -29,11 +29,14 @@ and returns. `aevan-gui` itself never starts the daemon silently.
 On macOS the `.pkg` installs the LaunchDaemon once and bootstraps it; a
 drag-installed app installs and bootstraps it from the **Start daemon
 (Administrator)** action. After that a reboot starts the root daemon with no
-prompt, and the GUI only prompts once in the app's lifetime. `aevand` binds the
-system endpoint when it runs as root (`/Library/Application Support/Aevan/
-aevan.sock`, mode 0666 in a 0755 root:wheel directory); clients try that path
-first and then the per-user `~/Library/Application Support/aevan/aevan.sock`.
-`aevan status` prints the endpoint that answered.
+prompt, and the GUI only prompts once in the app's lifetime. On relaunch the
+GUI first uses the answering system socket, then tries an unelevated
+`launchctl kickstart` of the installed job; only a missing job or a refused
+kickstart asks for administrator approval. `aevand` binds the system endpoint
+when it runs as root (`/Library/Application Support/Aevan/aevan.sock`, mode
+0666 in a 0755 root:wheel directory); clients try that path first and then the
+per-user `~/Library/Application Support/aevan/aevan.sock`. `aevan status`
+prints the endpoint that answered.
 
 ```sh
 cargo run -p aevan-gui
@@ -67,8 +70,35 @@ the GUI endpoint answers it asks the running GUI to show, and only then does
 the normal daemon/GUI launch path run.
 
 A stale Unix socket (or a pipe name that no longer accepts connections) is
-removed or retried once, so a crashed instance cannot leave the GUI permanently
-unopenable and a failed probe never falls through to a second window.
+probed with a short connect timeout. A dead owner fails with
+`ECONNREFUSED`/`ENOENT`; the file is removed, the bind is retried once, and
+that process becomes the primary. It never falls through to a second window or
+tray icon. A clean quit also unlinks the socket (the listener's `Drop` plus the
+quit cleanup), so the next launch starts from nothing.
+
+## Quit, disconnect, close and relaunch
+
+| Action | Contract |
+| --- | --- |
+| **Quit** (tray/menu bar, or **Cmd+Q** on macOS) | If a tunnel is connected, send one `disconnect`, wait for the response (bounded by the control client's timeout), then exit. If no tunnel is connected, exit immediately with no dialog. On Windows, also stop a daemon this GUI started. On macOS the keepalive system LaunchDaemon is never killed; it is left idle (no tunnel, no keepalives), which is what makes the next launch prompt-free. |
+| **Disconnect** | Send one `disconnect` and show `disconnecting` until the daemon reports `disconnected`. This is the explicit teardown action at any time. |
+| **Close window** | Hide the window only. The tray/menu-bar item, the daemon and any tunnel keep running, and the process stays alive. |
+| **Relaunch** (start the app while it is already running) | The new process connects to the primary instance, sends `show`, and exits. No second window and no second tray icon. |
+
+If the Quit disconnect fails or times out, the GUI does **not** exit silently.
+The window stays open with `Disconnect failed: <reason>` and two buttons:
+
+* **Quit anyway** — exits and logs that the tunnel may still be up.
+* **Cancel** — dismisses the dialog and returns to the connected view; the GUI
+  keeps running.
+
+On macOS, the only password prompt is the one-time daemon helper install (and
+the single administrator fallback for that same helper when macOS refuses the
+unelevated kickstart). Ordinary relaunches after the helper is installed never
+ask: they use the answering system socket or the unelevated `launchctl
+kickstart`. No tunnel action, Quit, or ordinary relaunch ever asks for a
+password. A failed start names itself in the banner from the daemon-start log
+(see below).
 
 ## System tray / menu-bar item (Windows and macOS)
 
@@ -80,11 +110,10 @@ The same menu exists on both platforms:
   for the selected profile and focuses the window.
 * **Disconnect** — disabled while disconnected; sends one `disconnect`.
 * **Show window** — focuses the existing window.
-* **Quit** — on Windows it disconnects first and stops the daemon if this GUI
-  started it. On macOS it only closes the GUI: `aevand` is a keepalive system
-  LaunchDaemon, so Quit leaves the daemon and any live tunnel alone. Use
-  **Disconnect** for the explicit teardown. If the disconnect fails on
-  Windows, the window stays open and offers **Quit anyway** or **Cancel**; a
+* **Quit** — disconnects a live tunnel first and then exits, as in the contract
+  table above. On Windows it also stops a daemon this GUI started; on macOS the
+  keepalive system LaunchDaemon is left running and idle. If the disconnect
+  fails, the window stays open and offers **Quit anyway** or **Cancel**; a
   half-torn-down tunnel is never abandoned silently.
 
 Closing the window with its close button only hides it. The tray icon (or the
@@ -164,12 +193,21 @@ notification is shown for a plain `disconnected` transition or for repeated
   exact reach-failure message (not-listening, access-denied or
   protocol-mismatch) and a **Start daemon (Administrator)** action. On Windows
   it performs the same one-UAC-prompt start as the `aevan` launcher. On macOS
-  it installs `/Library/LaunchDaemons/com.github.kilisk.aevand.plist` once
-  behind a single administrator prompt (or reuses the loaded job with
-  `launchctl kickstart`), then retries `status` and clears the banner on
-  success. osascript/launchctl failures are shown in the banner. If the prompt
-  is cancelled the message stays and the button can be pressed again; it is
-  never looped automatically.
+  it checks, in order: (a) does the system socket answer — use it and do
+  nothing; (b) is the LaunchDaemon installed but idle — run
+  `launchctl kickstart -k system/com.github.kilisk.aevand` as the logged-in
+  user, without elevation; (c) is it not installed — install
+  `/Library/LaunchDaemons/com.github.kilisk.aevand.plist` once behind a single
+  administrator prompt. A normal user's kickstart of an already-bootstrapped
+  system job may be refused; only then does the GUI fall back to the single
+  admin prompt. It then retries `status` and clears the banner on success.
+* Every elevated or prompted daemon start appends to
+  `$HOME/Library/Logs/Aevan/daemon-start.log` (directory 0700, file 0600):
+  timestamp, the exact command, exit status and stderr. The log never contains
+  credentials or the tunnel key block. If a start fails, the banner quotes the
+  last three lines so the failure names itself. If the prompt is cancelled the
+  message stays and the button can be pressed again; it is never looped
+  automatically.
 
 ### Connect sheet
 
@@ -305,7 +343,8 @@ exactly as before.
   and the explicit **Start daemon (Administrator)** action may start it, but
   opening `aevan-gui` never does.
 * No profile creation/editing/removal; use `aevan profile add`.
-* No log streaming or log-file access.
+* No log streaming. The GUI only reads the tail of its own owner-only
+  `daemon-start.log` to name a failed daemon start.
 * No tray on Linux (see above). macOS has a menu-bar item; notifications still
   use the cross-platform `notify-rust` path.
 * No password persistence; a TOTP secret is stored only in the OS keyring.
@@ -350,6 +389,18 @@ network or elevation:
 * poll scheduling is active only while live/changing or while a countdown is
   visible;
 * the split-tunnel preview follows the profile;
+* Quit disconnects first when connected, exits at once when not connected,
+  shows `Disconnect failed` without exiting, and Cancel restores the connected
+  view; the Windows shutdown decision stops only a daemon this GUI started,
+  while the macOS keepalive daemon is never stopped;
+* the relaunch decision uses an answering socket with no action, kickstarts an
+  installed job without elevation, and only uses the one admin prompt for a
+  refused kickstart or a missing job;
+* the daemon-start log records timestamp, command, exit status and stderr,
+  tails correctly, and stays owner-only on Unix;
+* a stale Unix socket is removed so the next process becomes primary, a live
+  socket makes the second process send `show`, and dropping the listener
+  unlinks the socket;
 * tray menu enablement matches the state machine (Connect disabled while
   connected, Disconnect disabled while disconnected, both disabled during
   recovery or while the daemon is unreachable) and the status line includes the

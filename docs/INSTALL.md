@@ -256,6 +256,49 @@ The DMG installs only `/Applications/Aevan.app`. The app embeds `aevand` in
 dependency. For `aevan` and `aevand` on `PATH`, and for the opt-in
 `LaunchDaemon`, use the `.pkg` below.
 
+### Uninstalling the drag install
+
+Dragging **Aevan** from Applications to the Trash removes the app only. The
+LaunchDaemon, the per-user support directory and the start logs are left behind
+by design, because a manual drag cannot know whether they are still in use.
+
+1. Quit Aevan from the menu-bar item. Quit disconnects a live tunnel first and
+   then exits; the LaunchDaemon is only left idle.
+2. Delete the app: drag `/Applications/Aevan.app` to the Trash, or run:
+
+   ```sh
+   rm -rf /Applications/Aevan.app
+   ```
+
+3. Remove the LaunchDaemon and its installed plist:
+
+   ```sh
+   sudo launchctl bootout system/com.github.kilisk.aevand
+   sudo rm /Library/LaunchDaemons/com.github.kilisk.aevand.plist
+   ```
+
+4. Remove the per-user support directory (profiles and the crash journal) and
+   the daemon-start log:
+
+   ```sh
+   rm -rf "$HOME/Library/Application Support/aevan"
+   rm -rf "$HOME/Library/Logs/Aevan"
+   ```
+
+`daemon-start.log` lives in that log directory. It records only the command,
+exit status and stderr of an elevated daemon start, never a credential or the
+tunnel key block.
+
+The Homebrew cask's `zap` stanza does the same cleanup. If Aevan was installed
+with `brew install --cask`, run:
+
+```sh
+brew uninstall --cask --zap aevan
+```
+
+That removes the app, the LaunchDaemon plist, `~/Library/Application Support/
+aevan`, the logs, and the cask's cache/preferences/saved-state entries.
+
 ### Opening an unsigned / ad-hoc-signed app anyway
 
 macOS may say the app "cannot be opened because it is from an unidentified

@@ -21,6 +21,18 @@ cask "aevan" do
               "~/Library/Saved Application State/com.github.kilisk.aevan.savedState",
             ]
 
+  zap trash: [
+        "/Applications/Aevan.app",
+      ],
+      delete: [
+        "/Library/LaunchDaemons/com.github.kilisk.aevand.plist",
+        "~/Library/Application Support/aevan",
+        "~/Library/Logs/Aevan",
+        "~/Library/Caches/com.github.kilisk.aevan",
+        "~/Library/Preferences/com.github.kilisk.aevan.plist",
+        "~/Library/Saved Application State/com.github.kilisk.aevan.savedState",
+      ]
+
   caveats do
     <<~EOS
       The DMG is unsigned and not notarised. Gatekeeper will warn on first
