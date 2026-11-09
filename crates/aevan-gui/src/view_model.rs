@@ -522,13 +522,21 @@ pub struct ConnectCredentials {
 }
 
 impl ConnectCredentials {
-    /// Turn the credentials into the one control request the daemon accepts.
-    pub fn into_request(self) -> Request {
+    /// The locally selected profile name, used to resolve the store entry.
+    pub fn profile_name(&self) -> &str {
+        &self.profile
+    }
+
+    /// Turn the credentials and resolved connection parameters into one
+    /// control request. The daemon never resolves the profile itself.
+    pub fn into_request(self, gateway_url: &str, realm: &str) -> Request {
         let token = self
             .token
             .map(|token| SecretString::new(token.as_str().to_owned()));
         Request::connect(
             Some(self.profile),
+            Some(gateway_url.to_owned()),
+            Some(realm.to_owned()),
             self.username,
             SecretString::new(self.password.as_str().to_owned()),
             token,

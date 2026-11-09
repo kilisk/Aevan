@@ -1,12 +1,14 @@
 //! Blocking control-client calls used from GUI worker threads.
 //!
 //! All tunnel work goes through `aevan-daemon`'s control client. This module
-//! never opens a TLS connection, reads a profile file itself or touches the
+//! resolves the selected profile from the user's own store before a connect,
+//! but never opens a TLS connection, reads secret material or touches the
 //! adapter/routes/DNS.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use aevan_core::{Profile, ProfileStore};
 use aevan_daemon::autostart::{self, TaskState};
 use aevan_daemon::client::{self, ClientError};
 use aevan_daemon::elevate::{self, StartOutcome};
@@ -36,9 +38,32 @@ pub fn status() -> Result<(StatusReport, String), ClientError> {
 /// There is no read timeout, matching the CLI: the daemon returns when the
 /// single authentication attempt and the apply step have finished.
 pub fn connect(credentials: ConnectCredentials) -> Result<StatusReport, ClientError> {
-    let request = credentials.into_request();
+    let profile = local_profile(credentials.profile_name())?;
+    let request = credentials.into_request(&profile.url, &profile.realm);
     let response = client::request(&request, None)?;
     expect_status(response)
+}
+
+/// Resolve a profile from this user's store before talking to the daemon.
+///
+/// The daemon may run as root with a different (empty) store, so sending a
+/// name alone would fail there.
+fn local_profile(name: &str) -> Result<Profile, ClientError> {
+    let path = ProfileStore::default_path().map_err(|error| {
+        ClientError::Transport(format!("cannot resolve the local profile store: {error}"))
+    })?;
+    let store = ProfileStore::load(&path).map_err(|error| {
+        ClientError::Transport(format!(
+            "cannot read the local profile store {}: {error}",
+            path.display()
+        ))
+    })?;
+    store.get(name).cloned().ok_or_else(|| {
+        ClientError::Transport(format!(
+            "profile '{name}' was not found in {}; add it before connecting",
+            path.display()
+        ))
+    })
 }
 
 /// Submit one `disconnect` request.
