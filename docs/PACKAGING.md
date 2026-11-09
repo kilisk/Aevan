@@ -7,11 +7,12 @@ paths.
 This document describes how the release artifacts are built, what they
 contain, how the version is bumped, and which parts are **not** tested.
 
-The release now has seven downloadable artifacts: the Windows MSI and portable
-zip, the macOS universal `.pkg` and its Homebrew cask, and the Linux tarball,
-`.deb` and `.rpm`. The Windows package is a WiX Toolset v7 MSI built with
-`wix build` (the v4+ command-line syntax, not WiX v3 `candle`/`light`). There is
-no `makensis`, Inno Setup or Chocolatey dependency.
+The release now has seven distribution artifacts: six GitHub release assets
+(the Windows MSI and portable zip, the macOS universal `.pkg`, and the Linux
+tarball, `.deb` and `.rpm`) plus the checked-in Homebrew cask. The Windows
+package is a WiX Toolset v7 MSI built with `wix build` (the v4+ command-line
+syntax, not WiX v3 `candle`/`light`). There is no `makensis`, Inno Setup or
+Chocolatey dependency.
 
 ## Prerequisites
 
