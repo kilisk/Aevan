@@ -336,6 +336,10 @@ mod macos {
 
     /// The Aevan tray glyph, embedded so the binary has no runtime asset path.
     const ICON_PNG: &[u8] = include_bytes!("../assets/aevan.png");
+    /// The alpha-only menu-bar template, generated from the glyph at build
+    /// time. macOS renders this in the menu-bar's own colour instead of as an
+    /// opaque white block.
+    const TEMPLATE_PNG: &[u8] = include_bytes!("../assets/aevan-template.png");
 
     struct Backend {
         /// Dropping the icon removes the status item, so the app owns it.
@@ -420,8 +424,11 @@ mod macos {
             .with_tooltip("Aevan — disconnected")
             .with_menu(Box::new(menu))
             .with_menu_on_left_click(true);
-        if let Some(icon) = load_icon() {
+        if let Some(icon) = load_icon(TEMPLATE_PNG) {
             builder = builder.with_icon_templated(icon);
+        } else if let Some(icon) = load_icon(ICON_PNG) {
+            // Fallback: show the real colour artwork rather than a blank block.
+            builder = builder.with_icon(icon);
         }
         let tray = builder.build()?;
 
@@ -453,8 +460,8 @@ mod macos {
             .set_tooltip(Some(format!("Aevan — {}", state.status)));
     }
 
-    fn load_icon() -> Option<tray_icon::Icon> {
-        let decoder = png::Decoder::new(Cursor::new(ICON_PNG));
+    fn load_icon(bytes: &'static [u8]) -> Option<tray_icon::Icon> {
+        let decoder = png::Decoder::new(Cursor::new(bytes));
         let mut reader = decoder.read_info().ok()?;
         let mut buffer = vec![0; reader.output_buffer_size()?];
         let info = reader.next_frame(&mut buffer).ok()?;

@@ -14,6 +14,7 @@ name = "aevan-gui"
 path = "src/main.rs"
 
 [build-dependencies]
+png = { workspace = true }
 winresource = { workspace = true }
 
 [dependencies]
