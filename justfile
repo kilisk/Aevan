@@ -12,6 +12,7 @@ msi := dist_dir + "/aevan-" + version + "-x64.msi"
 portable_zip := dist_dir + "/aevan-" + version + "-x64.zip"
 linux_tar := dist_dir + "/aevan-" + version + "-x86_64-linux.tar.gz"
 deb_pkg := dist_dir + "/aevan_" + version + "_amd64.deb"
+rpm_pkg := dist_dir + "/aevan-" + version + "-1.x86_64.rpm"
 macos_pkg := dist_dir + "/aevan-" + version + "-arm64+x86_64.pkg"
 universal_dir := "target/universal/release"
 
@@ -122,6 +123,7 @@ dist-linux: build
     cp README.md LICENSE LICENSE-APACHE LICENSE-MIT "$stage/"; \
     cp packaging/legal/LICENSE-WINTUN.txt "$stage/"; \
     cp packaging/linux/aevand.service packaging/linux/install.sh packaging/linux/uninstall.sh "$stage/"; \
+    cp packaging/linux/copyright "$stage/"; \
     mkdir -p "$stage/share/icons/hicolor/64x64/apps" \
              "$stage/share/icons/hicolor/128x128/apps" \
              "$stage/share/icons/hicolor/256x256/apps" \
@@ -210,11 +212,17 @@ deb: build
     @echo ""
     sha256sum {{deb_pkg}}
 
-# RPM skeleton. UNTESTED: no rpmbuild on the Windows build host; CI does not
-# build this package yet.
+# RPM built with rpmbuild from the release tarball. It installs the same file
+# set as the .deb: binaries, unit, desktop entry, icons and docs. The unit is
+# installed but not enabled or started; %post only reloads systemd and %preun
+# stops an already-enabled unit.
 rpm: dist-linux
+    @if [ "{{os()}}" != "linux" ]; then \
+        echo "error: rpm must run on Linux (it packages ELF binaries)" >&2; \
+        exit 1; \
+    fi
     @command -v rpmbuild >/dev/null 2>&1 || { \
-        echo "error: rpmbuild is not installed; the .rpm recipe is an untested skeleton" >&2; \
+        echo "error: rpmbuild is not installed; install the rpm package" >&2; \
         exit 1; \
     }
     @top="$(pwd)/{{dist_dir}}/rpmbuild"; \
@@ -223,6 +231,9 @@ rpm: dist-linux
     cp {{linux_tar}} "$top/SOURCES/"; \
     sed 's/@VERSION@/{{version}}/g' packaging/linux/aevan.spec > "$top/SPECS/aevan.spec"; \
     rpmbuild --define "_topdir $top" -bb "$top/SPECS/aevan.spec"; \
-    cp "$top"/RPMS/x86_64/*.rpm {{dist_dir}}/
-    @ls -lh {{dist_dir}}/*.rpm
-    @sha256sum {{dist_dir}}/*.rpm
+    cp "$top/RPMS/x86_64/aevan-{{version}}-1"*.rpm {{rpm_pkg}}
+    @echo ""
+    @echo "artifact:"
+    @ls -lh {{rpm_pkg}}
+    @echo ""
+    sha256sum {{rpm_pkg}}

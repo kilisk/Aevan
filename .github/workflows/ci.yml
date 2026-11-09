@@ -181,6 +181,9 @@ jobs:
           done
           test "$(just --version)" = "just 1.59.0"
 
+      - name: Install rpmbuild
+        run: sudo apt-get update && sudo apt-get install --yes rpm
+
       - name: Build Linux tarball
         run: just dist-linux
 
@@ -205,6 +208,27 @@ jobs:
             dpkg-deb --contents "$deb" | grep -Fq "$path"
           done
 
+      - name: Build RPM package
+        run: just rpm
+
+      - name: Inspect RPM package
+        run: |
+          set -euo pipefail
+          rpm_file="$(ls target/dist/aevan-*-1.x86_64.rpm)"
+          rpm -qip "$rpm_file"
+          rpm -qlp "$rpm_file"
+          for path in \
+            /usr/bin/aevan /usr/bin/aevand /usr/bin/aevan-gui \
+            /lib/systemd/system/aevand.service \
+            /usr/share/applications/aevan.desktop \
+            /usr/share/icons/hicolor/64x64/apps/aevan.png \
+            /usr/share/icons/hicolor/128x128/apps/aevan.png \
+            /usr/share/icons/hicolor/256x256/apps/aevan.png \
+            /usr/share/icons/hicolor/512x512/apps/aevan.png \
+            /usr/share/doc/aevan/README /usr/share/doc/aevan/copyright; do
+            rpm -qlp "$rpm_file" | grep -Fxq "$path"
+          done
+
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -212,4 +236,5 @@ jobs:
           path: |
             target/dist/*.tar.gz
             target/dist/*.deb
+            target/dist/*.rpm
           if-no-files-found: error
