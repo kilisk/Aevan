@@ -106,7 +106,12 @@ pub fn remove_totp_secret(profile: &str) -> Result<(), String> {
 /// silently: this is only called by the explicit start action.
 pub fn start_daemon() -> Result<(), String> {
     let executable = daemon_binary()?;
-    start_daemon_beside(&executable)
+    start_daemon_beside(&executable).map_err(|message| {
+        crate::start_log::with_tail(
+            message,
+            crate::start_log::tail_default(crate::start_log::BANNER_LINES),
+        )
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -114,9 +119,14 @@ fn start_daemon_beside(executable: &Path) -> Result<(), String> {
     use aevan_daemon::launchd;
 
     use crate::relaunch::{self, RelaunchOps};
+    use crate::start_log;
 
     struct MacOps<'a> {
         executable: &'a Path,
+    }
+
+    fn record(outcome: &aevan_daemon::elevate::ScriptOutcome) {
+        let _ = start_log::record_default(&outcome.command, outcome.exit_status, &outcome.stderr);
     }
 
     fn prompted_outcome(outcome: StartOutcome, action: &str) -> Result<(), String> {
@@ -144,11 +154,13 @@ fn start_daemon_beside(executable: &Path) -> Result<(), String> {
 
         fn kickstart_elevated(&self) -> Result<(), String> {
             let outcome = launchd::rearm_detailed();
+            record(&outcome);
             prompted_outcome(outcome.outcome, "starting the Aevan daemon")
         }
 
         fn install_elevated(&self) -> Result<(), String> {
             let outcome = launchd::install_detailed(self.executable);
+            record(&outcome);
             prompted_outcome(outcome.outcome, "installing the Aevan daemon")
         }
 
