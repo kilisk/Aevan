@@ -59,6 +59,10 @@ version "0.2.2"
 sha256 "b46f885e33efe0c93c436d92ff1344025667b5ffaa65732a4afcafb5df9054b3"
 ```
 
+The asset name contains a literal `+` (`arm64+x86_64`); the cask URL encodes it
+as `%2B`. Keep that encoding: a literal `+` in the download path is not
+reliable and GitHub returned 504 when it was tested.
+
 When publishing a new version:
 
 1. Attach the new `aevan-<version>-arm64+x86_64.pkg` to the GitHub release.
