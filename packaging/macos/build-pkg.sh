@@ -11,6 +11,8 @@ DIST="${3:?usage: build-pkg.sh <version> <universal-bin-dir> <dist-dir>}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 STAGE="$DIST/macos-staging"
 APP="$STAGE/Applications/Aevan.app"
+DMG_STAGE="$DIST/macos-dmg-staging"
+DMG="$DIST/aevan-$VERSION-arm64+x86_64.dmg"
 
 # Build AppIcon.icns best-effort. Prefer actool over the Icon Composer bundle
 # ("Aevan Icon.icon"); otherwise render an .iconset from the supplied PNGs and
@@ -74,13 +76,24 @@ build_icon() {
     return 1
 }
 
-rm -rf "$STAGE" "$DIST/Aevan.app"
+rm -rf "$STAGE" "$DIST/Aevan.app" "$DMG_STAGE" "$DMG"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 install -m 0755 "$BIN/aevan-gui" "$APP/Contents/MacOS/aevan-gui"
 sed "s/@VERSION@/$VERSION/g" \
     "$ROOT/packaging/macos/Info.plist.in" > "$APP/Contents/Info.plist"
 if ! build_icon "$APP/Contents/Resources"; then
     echo "icon: continuing without AppIcon.icns" >&2
+fi
+
+# Ad-hoc sign the finished bundle. There is no Developer ID and nothing is
+# notarised; a "-" identity only makes the bundle internally consistent so the
+# embedded executable and resources validate after the drag install.
+if command -v codesign >/dev/null 2>&1; then
+    codesign --force --deep --sign - --timestamp=none "$APP"
+    codesign --verify --deep --strict "$APP"
+    echo "sign: ad-hoc signed Aevan.app"
+else
+    echo "sign: codesign is unavailable; building an unsigned Aevan.app" >&2
 fi
 cp -R "$APP" "$DIST/Aevan.app"
 
@@ -109,3 +122,28 @@ productbuild --package "$DIST/aevan-component.pkg" \
     "$DIST/aevan-$VERSION-arm64+x86_64.pkg"
 
 rm -f "$DIST/aevan-component.pkg"
+
+# Drag-install disk image: Aevan.app plus an Applications symlink pointing at
+# the real /Applications. The user opens the image and drags the app across.
+mkdir -p "$DMG_STAGE"
+cp -R "$DIST/Aevan.app" "$DMG_STAGE/Aevan.app"
+ln -s /Applications "$DMG_STAGE/Applications"
+hdiutil create \
+    -volname "Aevan" \
+    -srcfolder "$DMG_STAGE" \
+    -ov \
+    -format UDZO \
+    "$DMG"
+rm -rf "$DMG_STAGE"
+
+# Signing the image is best-effort: some hdiutil versions and signing setups do
+# not mix, so a failure only warns and never discards a good DMG.
+if command -v codesign >/dev/null 2>&1; then
+    if codesign --force --sign - --timestamp=none "$DMG"; then
+        echo "sign: ad-hoc signed the DMG"
+    else
+        echo "sign: could not ad-hoc sign the DMG; the image itself is unchanged" >&2
+    fi
+fi
+
+echo "dmg: $DMG"

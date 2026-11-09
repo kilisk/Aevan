@@ -191,8 +191,39 @@ jobs:
           done
           test "$(just --version)" = "just 1.59.0"
 
-      - name: Build universal .app and .pkg
+      - name: Build universal .app, .pkg and .dmg
         run: just dist-macos
+
+      # This is the first real proof of the drag-install image. It mounts the
+      # DMG read-only, checks the bundle identity and icon, runs the GUI binary,
+      # and proves the Applications symlink resolves, then always detaches.
+      - name: Validate DMG
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)"
+          dmg="target/dist/aevan-${version}-arm64+x86_64.dmg"
+          test -f "$dmg"
+          ls -lh "$dmg"
+          mountpoint="$(mktemp -d)"
+          hdiutil attach "$dmg" -nobrowse -readonly -mountpoint "$mountpoint"
+          cleanup() {
+            hdiutil detach "$mountpoint" || true
+            rmdir "$mountpoint" || true
+          }
+          trap cleanup EXIT
+
+          app="$mountpoint/Aevan.app"
+          test -f "$app/Contents/Info.plist"
+          echo "CFBundleIdentifier: $(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist")"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist" | grep -Fx 'com.github.kilisk.aevan'
+          test -f "$app/Contents/Resources/AppIcon.icns"
+          echo "AppIcon.icns: present"
+          "$app/Contents/MacOS/aevan-gui" --version
+          test -L "$mountpoint/Applications"
+          echo "Applications symlink: $(readlink "$mountpoint/Applications")"
+          test "$(readlink "$mountpoint/Applications")" = "/Applications"
+          test -d "$mountpoint/Applications"
+          echo "dmg verification passed"
 
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
@@ -200,6 +231,7 @@ jobs:
           name: aevan-macos-universal
           path: |
             target/dist/*.pkg
+            target/dist/*.dmg
             target/dist/Aevan.app
           if-no-files-found: error
 

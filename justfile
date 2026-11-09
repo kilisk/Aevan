@@ -14,6 +14,7 @@ linux_tar := dist_dir + "/aevan-" + version + "-x86_64-linux.tar.gz"
 deb_pkg := dist_dir + "/aevan_" + version + "_amd64.deb"
 rpm_pkg := dist_dir + "/aevan-" + version + "-1.x86_64.rpm"
 macos_pkg := dist_dir + "/aevan-" + version + "-arm64+x86_64.pkg"
+macos_dmg := dist_dir + "/aevan-" + version + "-arm64+x86_64.dmg"
 universal_dir := "target/universal/release"
 
 build:
@@ -142,7 +143,8 @@ dist-linux: build
     @echo ""
     sha256sum {{linux_tar}}
 
-# macOS: universal (arm64 + x86_64) .app and .pkg in target/dist.
+# macOS: universal (arm64 + x86_64) .app, .pkg and drag-install .dmg in
+# target/dist.
 dist-macos:
     @if [ "{{os()}}" != "macos" ]; then \
         echo "error: dist-macos must run on macOS (it uses lipo, pkgbuild and productbuild)" >&2; \
@@ -161,12 +163,12 @@ dist-macos:
     bash packaging/macos/build-pkg.sh "{{version}}" "{{universal_dir}}" "{{dist_dir}}"
     @echo ""
     @echo "artifacts:"
-    @ls -lh {{macos_pkg}} {{dist_dir}}/Aevan.app
+    @ls -lh {{macos_pkg}} {{macos_dmg}} {{dist_dir}}/Aevan.app
     @echo ""
     @if command -v sha256sum >/dev/null 2>&1; then \
-        sha256sum {{macos_pkg}}; \
+        sha256sum {{macos_pkg}} {{macos_dmg}}; \
     else \
-        shasum -a 256 {{macos_pkg}}; \
+        shasum -a 256 {{macos_pkg}} {{macos_dmg}}; \
     fi
 
 # Debian package built with dpkg-deb alone (no debhelper). The unit is
