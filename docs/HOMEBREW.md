@@ -1,14 +1,13 @@
 # Aevan on Homebrew
 
 Aevan is distributed as a **Homebrew cask**, not a formula. The macOS artifact
-is a signed-format `.pkg` (built with `pkgbuild`/`productbuild`), which installs
-`/Applications/Aevan.app`, `/usr/local/bin` and a LaunchDaemon plist. A cask
-models that kind of prebuilt package; a formula would build from source and
-would not reproduce the package layout.
+is a drag-install `.dmg` containing `/Applications/Aevan.app` and an
+`Applications` symlink. A cask models that kind of prebuilt app bundle; a
+formula would build from source and would not reproduce the image layout.
 
 The cask lives in this repository at [Casks/aevan.rb](../Casks/aevan.rb) and
-installs the `.pkg` attached to the matching GitHub release, verifying its
-SHA-256.
+installs the `.dmg` attached to the matching GitHub release, verifying its
+SHA-256. The `.pkg` is still published for the CLI/system install.
 
 ## Install without a tap
 
@@ -32,22 +31,20 @@ the `brew reinstall` command above with an updated `Casks/aevan.rb`.
 
 ## What the cask installs
 
-The `.pkg` payload is the same one documented in
-[INSTALL.md](INSTALL.md#macos-package):
+The DMG is the same one documented in
+[INSTALL.md](INSTALL.md#macos-dmg-recommended-open-drag-launch):
 
 | Path | Contents |
 | --- | --- |
-| `/Applications/Aevan.app` | GUI bundle |
-| `/usr/local/bin/aevan` | CLI |
-| `/usr/local/bin/aevand` | daemon |
-| `/usr/local/bin/aevan-uninstall` | uninstaller |
-| `/Library/LaunchDaemons/com.github.kilisk.aevand.plist` | opt-in boot daemon |
-| `/usr/local/share/doc/aevan/` | README and licences |
+| `/Applications/Aevan.app` | GUI bundle with the daemon embedded in `Contents/MacOS/` |
 
-The package is unsigned and not notarised, so Gatekeeper warns on first launch.
-The LaunchDaemon is installed but **not** loaded; see
-[INSTALL.md](INSTALL.md#macos-package) for the `launchctl` opt-in. The cask
-uninstall removes the package files; it does not remove your profile store.
+The DMG and app are unsigned and not notarised (the app is ad-hoc signed only),
+so Gatekeeper warns on first launch. The cask uninstall quits the app, unloads
+the daemon label if present, and removes the app plus the support files listed
+in the cask, including `~/Library/Application Support/aevan`. If you want to
+keep profiles, copy that directory before uninstalling. The cask does not
+install `aevan`, `aevand` or `aevan-uninstall` on `PATH`; use the `.pkg` for
+that.
 
 ## Updating the cask for a release
 
@@ -55,9 +52,13 @@ The cask has two values that must match the release the maintainer is
 publishing:
 
 ```ruby
-version "0.2.2"
-sha256 "b46f885e33efe0c93c436d92ff1344025667b5ffaa65732a4afcafb5df9054b3"
+version "0.2.4"
+sha256 "0000000000000000000000000000000000000000000000000000000000000000"
 ```
+
+The checked-in checksum is a placeholder because the first real DMG is produced
+by the macOS CI job. Replace it before publishing the cask; `brew` will refuse
+to install until it matches the downloaded image.
 
 The asset name contains a literal `+` (`arm64+x86_64`); the cask URL encodes it
 as `%2B`. Keep that encoding: a literal `+` in the download path is not
@@ -65,11 +66,12 @@ reliable and GitHub returned 504 when it was tested.
 
 When publishing a new version:
 
-1. Attach the new `aevan-<version>-arm64+x86_64.pkg` to the GitHub release.
-2. Download that exact asset and compute its checksum:
+1. Attach the new `aevan-<version>-arm64+x86_64.dmg` (and the `.pkg`) to the
+   GitHub release.
+2. Download that exact DMG and compute its checksum:
 
    ```sh
-   shasum -a 256 aevan-<version>-arm64+x86_64.pkg
+   shasum -a 256 aevan-<version>-arm64+x86_64.dmg
    ```
 
    The GitHub release API also reports it as `digest` for the asset.

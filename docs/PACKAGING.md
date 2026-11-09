@@ -7,9 +7,10 @@ paths.
 This document describes how the release artifacts are built, what they
 contain, how the version is bumped, and which parts are **not** tested.
 
-The release now has seven distribution artifacts: six GitHub release assets
-(the Windows MSI and portable zip, the macOS universal `.pkg`, and the Linux
-tarball, `.deb` and `.rpm`) plus the checked-in Homebrew cask. The Windows
+The release now has eight distribution artifacts: seven GitHub release assets
+(the Windows MSI and portable zip, the macOS universal `.dmg` and `.pkg`, and
+the Linux tarball, `.deb` and `.rpm`) plus the checked-in Homebrew cask. The
+Windows
 package is a WiX Toolset v7 MSI built with `wix build` (the v4+ command-line
 syntax, not WiX v3 `candle`/`light`). There is no `makensis`, Inno Setup or
 Chocolatey dependency.
@@ -27,6 +28,8 @@ Chocolatey dependency.
   ```
 - The pinned Wintun 0.14.1 DLL in `target\release\wintun.dll`
 - `pwsh` or Windows PowerShell 5.1 for the zip step
+- macOS packaging (macOS only): `lipo`, `pkgbuild`, `productbuild`, `hdiutil`
+  and `codesign`; the icon step also uses `actool` or `sips`/`iconutil`
 
 ### WiX v7 OSMF EULA
 
@@ -221,11 +224,25 @@ README.md
 `x86_64-apple-darwin`, joins each binary with `lipo`, and calls
 `packaging/macos/build-pkg.sh`. The script creates the GUI
 `Aevan.app` bundle (`CFBundleName`/`CFBundleDisplayName` `Aevan`, identifier
-still `com.github.kilisk.aevan`), a component root with
-`/usr/local/bin/{aevan,aevand,aevan-uninstall}` and
-`/Library/LaunchDaemons/com.github.kilisk.aevand.plist`, then produces
-`aevan-<version>-arm64+x86_64.pkg` with `pkgbuild` + `productbuild`. It also
-leaves `target/dist/Aevan.app` for upload.
+still `com.github.kilisk.aevan`), embeds `aevand` in
+`Aevan.app/Contents/MacOS/` beside `aevan-gui`, and ad-hoc signs the bundle with
+`codesign --sign -` so the executable and resources validate without a
+Developer ID. It then:
+
+- produces `aevan-<version>-arm64+x86_64.pkg` from a component root with
+  `/usr/local/bin/{aevan,aevand,aevan-uninstall}` and
+  `/Library/LaunchDaemons/com.github.kilisk.aevand.plist` using `pkgbuild` +
+  `productbuild`;
+- builds `aevan-<version>-arm64+x86_64.dmg` from a staging folder containing
+  `Aevan.app` and a symlink named `Applications` that points at `/Applications`,
+  using `hdiutil create -format UDZO`;
+- leaves `target/dist/Aevan.app` for upload.
+
+The DMG is the drag-install path. The `.pkg` is still built and remains the
+CLI/system install (and the opt-in `LaunchDaemon`). The embedded `aevand` lets
+the GUI resolve a daemon beside its own executable instead of relying on
+`/usr/local/bin`; the GUI's **Start daemon (Administrator)** action runs it with
+one native `osascript` administrator prompt.
 
 `AppIcon.icns` is built best-effort from `assets/branding/Aevan Icon.icon` with
 `actool` when available; otherwise the script renders an `.iconset` from the
@@ -233,9 +250,10 @@ supplied PNGs with `sips` and runs `iconutil`. The script prints which path
 ran. A missing tool or a tool failure only warns: the package still builds
 without an icon and never fails because of it.
 
-The LaunchDaemon is shipped but **not loaded** by the package. Enabling it is
-an explicit `launchctl` step documented in `docs/INSTALL.md`. The package is
-unsigned and not notarised; Gatekeeper will warn.
+The DMG is ad-hoc signed too when `codesign` accepts it; that step is
+best-effort and a failure only warns. Nothing is notarised, so Gatekeeper still
+warns. The `LaunchDaemon` is shipped in the `.pkg` but **not loaded**; enabling
+it is an explicit `launchctl` step documented in `docs/INSTALL.md`.
 
 ### Linux
 
@@ -305,8 +323,12 @@ There is no tap repository today.
 - `package-windows`: `needs: test`, installs Rust, pinned `just` and WiX v7,
   accepts the OSMF EULA, fetches Wintun, runs `just dist-windows`, validates the
   MSI and uploads `target/dist/*.msi` and `*.zip` as `aevan-windows-x64`.
-- `package-macos`: `needs: test`, runs `just dist-macos` on `macos-latest` and
-  uploads `target/dist/*.pkg` plus `target/dist/Aevan.app` as
+- `package-macos`: `needs: test`, runs `just dist-macos` on `macos-latest`,
+  mounts the new DMG read-only, and asserts the bundle `Info.plist` exists,
+  `CFBundleIdentifier` is `com.github.kilisk.aevan`, `AppIcon.icns` is present,
+  both embedded binaries run `--version`, and the `Applications` symlink
+  resolves to `/Applications`; it always detaches. It uploads
+  `target/dist/*.pkg`, `target/dist/*.dmg` and `target/dist/Aevan.app` as
   `aevan-macos-universal`.
 - `package-linux`: `needs: test`, installs the pinned `just` and the `rpm`
   package, runs `just dist-linux`, `just deb` and `just rpm`, inspects the
@@ -321,7 +343,7 @@ an unversioned "latest" tool.
 
 ## Artifact status
 
-Every artifact below is built by CI. Only the MSI, `.deb` and `.rpm` are also
+Every artifact below is built by CI. The MSI, DMG, `.deb` and `.rpm` are also
 inspected there. **No artifact has been installed on a clean machine**, and no
 installer has been installed, upgraded or uninstalled by a user. CI inspection
 proves package structure, not installation or runtime behaviour.
@@ -330,6 +352,7 @@ proves package structure, not installation or runtime behaviour.
 | --- | --- | --- | --- |
 | `aevan-<version>-x64.msi` | yes | `wix msi validate` | no |
 | `aevan-<version>-x64.zip` | yes | no (binary VERSIONINFO only) | no |
+| `aevan-<version>-arm64+x86_64.dmg` | yes | mount, bundle/icon/binary/symlink assertions | no |
 | `aevan-<version>-arm64+x86_64.pkg` | yes | not inspected | no |
 | `aevan-<version>-x86_64-linux.tar.gz` | yes | not inspected | no |
 | `aevan_<version>_amd64.deb` | yes | `dpkg-deb --info/--contents` and path assertions | no |
@@ -344,15 +367,18 @@ proves package structure, not installation or runtime behaviour.
    `aevan-linux-x64` workflow artifacts.
 3. Create the GitHub release and attach **all** of these files:
    `aevan-<version>-x64.msi`, `aevan-<version>-x64.zip`,
-   `aevan-<version>-arm64+x86_64.pkg`, `aevan-<version>-x86_64-linux.tar.gz`,
-   `aevan_<version>_amd64.deb` and `aevan-<version>-1.x86_64.rpm`.
-4. Publish `SHA256SUMS.txt` alongside them. The just recipes print each
-   Linux artifact's sum; use `sha256sum`/`shasum -a 256` for the rest.
+   `aevan-<version>-arm64+x86_64.dmg`, `aevan-<version>-arm64+x86_64.pkg`,
+   `aevan-<version>-x86_64-linux.tar.gz`, `aevan_<version>_amd64.deb` and
+   `aevan-<version>-1.x86_64.rpm`.
+4. Publish `SHA256SUMS.txt` alongside them. The just recipes print each macOS
+   and Linux artifact's sum; use `sha256sum`/`shasum -a 256` for the rest.
 5. Copy [docs/RELEASE-NOTES-TEMPLATE.md](RELEASE-NOTES-TEMPLATE.md) to
    `docs/RELEASE-NOTES-<version>.md` and fill in the changes, including the new
-   `.deb`, `.rpm` and cask downloads.
-6. Update `version` and `sha256` in `Casks/aevan.rb` from the published `.pkg`
-   asset, as described in [docs/HOMEBREW.md](HOMEBREW.md).
+   DMG, `.deb`, `.rpm` and cask downloads.
+6. Update `version` and `sha256` in `Casks/aevan.rb` from the published `.dmg`
+   asset, as described in [docs/HOMEBREW.md](HOMEBREW.md). The checked-in
+   checksum is a placeholder and `brew` will refuse to install until it is
+   replaced with the real image checksum.
 
 ## What is not tested
 
@@ -367,10 +393,13 @@ Be explicit about this when handing the build to someone:
   machine.**
 - **The Linux tarball is built by CI, not by the Windows build host.** It has
   not been installed or run from the archive in this environment.
-- **The macOS universal `.app`/`.pkg` is built only by CI.** It could not be
-  cross-compiled on the Windows host (no Apple SDK); CI compiles and packages
-  it with `macos-latest`. The `actool`/`iconutil` icon path can therefore only
-  be proven in CI. The package has never been installed on a clean Mac.
+- **The macOS universal `.app`, `.pkg` and `.dmg` are built only by CI.** They
+  could not be cross-compiled on the Windows host (no Apple SDK), and this host
+  cannot run `hdiutil` or `osascript`; CI compiles, packages and mounts them on
+  `macos-latest`. The `actool`/`iconutil` icon path, the ad-hoc `codesign` step,
+  `hdiutil create`, and the mount assertions can therefore only be proven in
+  CI. Neither the package nor the DMG has been installed on a clean Mac, and
+  the one-prompt `osascript` daemon start has not been run on macOS hardware.
 - **The `.deb` and `.rpm` are now built in CI, but they have never been
   installed by anyone.** CI is their first real build and its `dpkg-deb` /
   `rpm -qip/-qlp` checks prove package structure only. The recipes cannot be
@@ -382,7 +411,8 @@ Be explicit about this when handing the build to someone:
   daemon needs.
 - **The Homebrew cask has never been installed.** It is a checked-in Ruby file
   pointing at the published `.pkg`; CI does not run `brew`.
-- **Nothing is code-signed.** Windows SmartScreen and macOS Gatekeeper will
-  warn; the MSI is not Authenticode-signed and there is no notarization.
+- **Nothing is code-signed with a real identity.** Windows SmartScreen and
+  macOS Gatekeeper will warn; the MSI is not Authenticode-signed, the macOS app
+  is ad-hoc signed only, and there is no notarization.
 - **The MSI does not install a Windows service.** That is intentional, not a
   missing piece; see the trust model above.

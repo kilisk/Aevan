@@ -20,16 +20,18 @@ protocol is described in [docs/PROTOCOL.md](docs/PROTOCOL.md).
 - A privileged daemon (`aevand`) with a local control endpoint, crash-recovery
   journal and explicit elevation at launch.
 - A native GUI with a tray/menu-bar item.
-- Installers: a Windows MSI and portable zip, a macOS universal `.pkg` (also
-  installable with the included Homebrew cask), and a Linux tarball plus
-  `.deb` and `.rpm` packages.
+- Installers: a Windows MSI and portable zip, a macOS universal `.dmg` (drag to
+  Applications; also installable with the included Homebrew cask) and a macOS
+  `.pkg` for the CLI/system install, and a Linux tarball plus `.deb` and `.rpm`
+  packages.
 
 ## What does not work
 
 - **No IF-T/TLS (pulse) transport.** Only the Network Connect path is
   implemented; gateways that require the pulse path are out of scope.
-- **No code signing.** Binaries and packages are unsigned, so Windows
-  SmartScreen and macOS Gatekeeper will warn. See [SECURITY.md](SECURITY.md).
+- **No code signing.** Binaries and packages are unsigned (the macOS app is
+  ad-hoc signed only and not notarised), so Windows SmartScreen and macOS
+  Gatekeeper will warn. See [SECURITY.md](SECURITY.md).
 - **No commercial support.** This is an independent project; do not ask Ivanti
   for help with it.
 
@@ -54,25 +56,28 @@ protocol is described in [docs/PROTOCOL.md](docs/PROTOCOL.md).
 
 ## Platform support
 
-| Platform | Status |
-|---|---|
-| **Windows 10/11** | Complete and live-verified: login, oNCP handshake, ESP tunnel, daemon, tray GUI, installers |
-| **macOS** | The `utun` device backend is implemented and requires root (`sudo`). It builds, installs, runs the CLI, daemon and GUI, and the full route/MTU/DNS appliers exist. CI opens a real `utun` device under `sudo` with `crates/aevan-tun/examples/tun_smoke.rs`; **a full live tunnel still needs a human on macOS hardware.** |
-| **Linux** | The `/dev/net/tun` device backend is implemented and requires root or `CAP_NET_ADMIN`. Packaging (tarball, `.deb`, `.rpm`) exists, and CI opens a real TUN device under `sudo` with the same smoke example. **A full live tunnel still needs a human on Linux hardware.** |
+| Platform | Install | Status |
+|---|---|---|
+| **Windows 10/11** | `aevan-<version>-x64.msi` (Administrator) or portable `.zip` | Complete and live-verified: login, oNCP handshake, ESP tunnel, daemon, tray GUI, installers |
+| **macOS** | `aevan-<version>-arm64+x86_64.dmg` (drag to Applications), the `.pkg` for the CLI/system install, or the Homebrew cask | The `utun` device backend is implemented and requires root (`sudo`). It builds, installs, runs the CLI, daemon and GUI, and the full route/MTU/DNS appliers exist. CI opens a real `utun` device under `sudo` with `crates/aevan-tun/examples/tun_smoke.rs`; **a full live tunnel still needs a human on macOS hardware.** |
+| **Linux** | tarball + `install.sh`, `.deb` or `.rpm` | The `/dev/net/tun` device backend is implemented and requires root or `CAP_NET_ADMIN`. Packaging (tarball, `.deb`, `.rpm`) exists, and CI opens a real TUN device under `sudo` with the same smoke example. **A full live tunnel still needs a human on Linux hardware.** |
 
 The device layer is real on all three platforms. Only the Windows data plane has been exercised end to end; macOS and Linux device creation is live-verified in CI, but their full tunnel path (handshake, ESP traffic, apply, teardown) is still a human check.
 
 ## Install
 
 Windows: use `aevan-<version>-x64.msi` (per-machine, Administrator) or the
-portable `aevan-<version>-x64.zip`. macOS: use
-`aevan-<version>-arm64+x86_64.pkg` (universal, unsigned, `sudo`), or
-`brew install --cask ./Casks/aevan.rb` from a checkout. Linux: use
+portable `aevan-<version>-x64.zip`. macOS: open
+`aevan-<version>-arm64+x86_64.dmg`, drag **Aevan** to Applications, eject and
+launch; the first daemon start asks for administrator approval once. The
+`aevan-<version>-arm64+x86_64.pkg` remains for the CLI/system install, and
+`brew install --cask ./Casks/aevan.rb` works from a checkout. Linux: use
 `aevan-<version>-x86_64-linux.tar.gz` and its `install.sh`, or the
 `aevan_<version>_amd64.deb` / `aevan-<version>-1.x86_64.rpm` package.
 
-The packages are unsigned. The `.deb` and `.rpm` are built and inspected in
-CI, but no installer has been installed on a clean machine. See
+The packages and the DMG are unsigned and not notarised. The `.deb` and `.rpm`
+are built and inspected in CI, but no installer has been installed on a clean
+machine. See
 [docs/INSTALL.md](docs/INSTALL.md) for privileges, install locations, tray
 availability, uninstall commands and the macOS Gatekeeper workaround,
 [docs/PACKAGING.md](docs/PACKAGING.md) to build the artifacts yourself, and

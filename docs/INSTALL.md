@@ -4,9 +4,10 @@
 `aevan`, `aevand` and `aevan-gui`; the crates, control pipe, scheduled task and
 systemd unit use the `aevan` names.
 
-Aevan ships as a Windows MSI and portable zip, a macOS universal package and
-Homebrew cask, and a Linux tarball, Debian package and RPM. The CLI, daemon and
-GUI are the same three binaries in every package:
+Aevan ships as a Windows MSI and portable zip, a macOS universal DMG (drag to
+Applications) and `.pkg` (CLI/system install) plus a Homebrew cask, and a Linux
+tarball, Debian package and RPM. The CLI, daemon and GUI are the same three
+binaries in every package:
 
 | Binary | Purpose |
 | --- | --- |
@@ -23,19 +24,21 @@ Version 0.2.2 is the current build.
 | --- | --- | --- | --- | --- |
 | Windows 10/11 x64 | `aevan-<version>-x64.msi` | `msiexec` | Yes, for the MSI | `C:\Program Files\aevan`, system `PATH`, Start menu shortcut |
 | Windows 10/11 x64 | `aevan-<version>-x64.zip` | extract | No | the directory you extract |
+| macOS 11+ (arm64 + x86_64) | `aevan-<version>-arm64+x86_64.dmg` | open, drag `Aevan.app` to Applications | No, but the first daemon start asks for administrator approval | `/Applications/Aevan.app` |
 | macOS 11+ (arm64 + x86_64) | `aevan-<version>-arm64+x86_64.pkg` | `installer` / double-click | Yes (`sudo`) | `/Applications/Aevan.app`, `/usr/local/bin`, `/Library/LaunchDaemons` |
-| macOS 11+ (Homebrew) | `Casks/aevan.rb` | `brew install --cask` | Yes (`sudo`, for the `.pkg` payload) | same as the `.pkg` |
+| macOS 11+ (Homebrew) | `Casks/aevan.rb` | `brew install --cask` | No, but the first daemon start asks for administrator approval | `/Applications/Aevan.app` |
 | Linux x86_64 | `aevan-<version>-x86_64-linux.tar.gz` | `install.sh` | Yes (`sudo`) | `/usr/local/bin`, `/etc/systemd/system` |
 | Debian/Ubuntu amd64 | `aevan_<version>_amd64.deb` | `apt` / `dpkg` | Yes (`sudo`) | `/usr/bin`, `/lib/systemd/system`, `/usr/share` |
 | Fedora/RHEL x86_64 | `aevan-<version>-1.x86_64.rpm` | `dnf` / `rpm` | Yes (`sudo`) | `/usr/bin`, `/lib/systemd/system`, `/usr/share` |
 
-The macOS package is **unsigned and not notarised**, and nothing in this
-repository is code-signed. Gatekeeper and Windows SmartScreen will warn. The
-macOS steps to open an unsigned package are in the macOS section below.
+The macOS DMG and app are **unsigned and not notarised**; the app is ad-hoc
+signed only. Nothing in this repository uses an Apple Developer ID or
+Authenticode. Gatekeeper and Windows SmartScreen will warn. The macOS steps to
+open an ad-hoc-signed app and the `.pkg` are in the macOS sections below.
 
 ## Artifact status
 
-Every artifact is built by CI. Only the MSI, `.deb` and `.rpm` are also
+Every artifact is built by CI. The MSI, DMG, `.deb` and `.rpm` are also
 inspected there. **No artifact has been installed on a clean machine.** The
 `.deb` and `.rpm` are now built in CI, but they have never been installed by
 anyone; their CI checks are structural only.
@@ -44,6 +47,7 @@ anyone; their CI checks are structural only.
 | --- | --- | --- | --- |
 | `aevan-<version>-x64.msi` | yes | yes (`wix msi validate`) | no |
 | `aevan-<version>-x64.zip` | yes | no (binary VERSIONINFO only) | no |
+| `aevan-<version>-arm64+x86_64.dmg` | yes | yes (mount, bundle, icon, binary and symlink assertions) | no |
 | `aevan-<version>-arm64+x86_64.pkg` | yes | no | no |
 | `aevan-<version>-x86_64-linux.tar.gz` | yes | no | no |
 | `aevan_<version>_amd64.deb` | yes | yes (`dpkg-deb`) | no |
@@ -229,7 +233,54 @@ used from a stable directory.
 
 ---
 
-## macOS package
+## macOS DMG (recommended: open, drag, launch)
+
+> The DMG and the app inside it are **unsigned and not notarised**. They are
+> ad-hoc signed so the bundle is internally consistent, not signed with an
+> Apple Developer ID. Gatekeeper will warn on first launch.
+
+Requirements: macOS 11 or later; the app is universal (Apple silicon and
+Intel).
+
+1. Open `aevan-<version>-arm64+x86_64.dmg`.
+2. Drag **Aevan** onto the **Applications** shortcut in the same window.
+3. Eject the disk image and open **Aevan** from Applications (or Spotlight).
+4. The app starts window-only. On the first tunnel action, the **Daemon
+   unavailable** banner offers **Start daemon (Administrator)**. That button
+   shows one native macOS administrator prompt and starts the embedded daemon.
+   If you dismiss it, the window stays usable and says the daemon needs
+   administrator approval; it never repeats the prompt on its own.
+
+The DMG installs only `/Applications/Aevan.app`. The app embeds `aevand` in
+`Aevan.app/Contents/MacOS/`, so the drag install has no `/usr/local/bin`
+dependency. For `aevan` and `aevand` on `PATH`, and for the opt-in
+`LaunchDaemon`, use the `.pkg` below.
+
+### Opening an unsigned / ad-hoc-signed app anyway
+
+macOS may say the app "cannot be opened because it is from an unidentified
+developer" or that it is damaged. That is expected for an app with no
+notarisation. To proceed:
+
+1. In Finder, **Control-click** `/Applications/Aevan.app` and choose **Open**,
+   then **Open** again in the dialog.
+2. If macOS still blocks it, open **System Settings → Privacy & Security**,
+   scroll to **Security**, click **Open Anyway**, authenticate, and try again.
+3. Alternatively, remove the quarantine flag for this app only:
+
+   ```sh
+   xattr -dr com.apple.quarantine /Applications/Aevan.app
+   ```
+
+Do not disable Gatekeeper globally. To verify the download independently:
+
+```sh
+shasum -a 256 aevan-<version>-arm64+x86_64.dmg
+```
+
+---
+
+## macOS package (CLI and system install)
 
 > This package is **unsigned and not notarised**. Gatekeeper will warn on first
 > use. It is built and published as-is by CI; there is no Apple Developer ID.
@@ -254,8 +305,8 @@ unidentified developer". That is expected. To proceed:
 2. If macOS still blocks it, open **System Settings → Privacy & Security**,
    scroll to **Security**, click **Open Anyway**, authenticate, and try again.
 3. For the GUI's first launch, do the same with `/Applications/Aevan.app`:
-   Control-click it and choose **Open**, or use
-   **System Settings → Privacy & Security → Open Anyway**.
+   Control-click it and choose **Open**, or remove the quarantine flag with
+   `xattr -dr com.apple.quarantine /Applications/Aevan.app`.
 
 Do not disable Gatekeeper globally. To verify the download independently:
 
@@ -263,7 +314,7 @@ Do not disable Gatekeeper globally. To verify the download independently:
 shasum -a 256 aevan-0.2.0-arm64+x86_64.pkg
 ```
 
-### What the package installs
+### What the .pkg installs
 
 | Path | Contents |
 | --- | --- |
@@ -329,18 +380,20 @@ removes both for the invoking user and for root.
 ## Homebrew cask (macOS, tap-less)
 
 The repository ships a cask at [Casks/aevan.rb](../Casks/aevan.rb). It installs
-the same `.pkg` described above, after verifying the published asset's SHA-256.
-From a checkout of this repository:
+the app from the same `.dmg` described above, after verifying the published
+image's SHA-256. From a checkout of this repository:
 
 ```sh
 brew install --cask ./Casks/aevan.rb
 ```
 
 The `./` is required. This is a cask rather than a formula because the macOS
-artifact is a signed-format `.pkg`, not a source build. There is no tap
-repository; [docs/HOMEBREW.md](HOMEBREW.md) explains the tap-less workflow,
-how to update the cask for a release, and how to publish a tap later. The cask
-has never been installed by anyone, and the `.pkg` it installs is unsigned.
+artifact is a prebuilt `.dmg`, not a source build. There is no tap repository;
+[docs/HOMEBREW.md](HOMEBREW.md) explains the tap-less workflow, how to update
+the cask for a release, and how to publish a tap later. The cask has never been
+installed by anyone, and the `.dmg` it installs is unsigned and not notarised.
+The cask installs the app only; use the `.pkg` if you also want `aevan` and
+`aevand` on `PATH`.
 
 ---
 
@@ -509,7 +562,9 @@ The profile store is kept.
 | Action | Windows | macOS / Linux | Why |
 | --- | --- | --- | --- |
 | Install / uninstall a package | Administrator | `sudo` | writes `Program Files` / `PATH`, or `/Applications`, `/usr/local`, `/Library`, `/etc/systemd/system` |
-| `aevand` creating the TUN adapter | Administrator | `sudo` / root (or `CAP_NET_ADMIN`) | `WintunCreateAdapter`, `/dev/net/tun` and route/DNS changes are machine state |
+| Drag `Aevan.app` from the macOS DMG | n/a | No | writes only `/Applications/Aevan.app` |
+| `aevand` creating the TUN adapter | Administrator | `sudo` / root (or `CAP_NET_ADMIN`) | `WintunCreateAdapter`, `utun`, `/dev/net/tun` and route/DNS changes are machine state |
+| Start the embedded daemon from the GUI (macOS) | n/a | One native administrator prompt | creates `utun` and changes routes/DNS as root |
 | Autostart | Administrator | `sudo` | scheduled task, LaunchDaemon or systemd unit |
 | `aevan doctor` | No | No | read-only probes; sends no credentials |
 | `aevan status`, `aevan disconnect`, `aevan logs` | No | No | local control endpoint only |
@@ -574,7 +629,7 @@ purge:
 | --- | --- | --- |
 | Windows | `%APPDATA%\aevan` | `rmdir /s /q "%APPDATA%\aevan"` |
 | macOS | `~/Library/Application Support/aevan` (and `~/.config/aevan`) | `sudo /usr/local/bin/aevan-uninstall --purge` |
-| macOS (Homebrew cask) | same as macOS | run `sudo /usr/local/bin/aevan-uninstall --purge` before `brew uninstall --cask aevan` |
+| macOS (Homebrew cask) | nothing: `brew uninstall --cask aevan` removes `/Applications/Aevan.app` and `~/Library/Application Support/aevan` | copy `~/Library/Application Support/aevan` first if you want to keep profiles |
 | Linux | `~/.config/aevan` (the root service store is `/root/.config/aevan`) | `sudo ./uninstall.sh --purge` |
 | Debian/Ubuntu (`.deb`) | `~/.config/aevan` and `/root/.config/aevan` | `sudo rm -rf /root/.config/aevan ~/.config/aevan` |
 | Fedora/RHEL (`.rpm`) | `~/.config/aevan` and `/root/.config/aevan` | `sudo rm -rf /root/.config/aevan ~/.config/aevan` |
