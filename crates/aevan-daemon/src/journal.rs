@@ -68,6 +68,52 @@ impl JournalRoute {
     }
 }
 
+/// Serializable form of [`aevan_tun::DnsContext`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum JournalDnsContext {
+    /// No platform state was captured.
+    #[default]
+    Unspecified,
+    /// macOS network service used for the change.
+    MacosService {
+        /// Service name.
+        service: String,
+    },
+    /// Linux systemd-resolved.
+    LinuxResolved,
+    /// Linux `resolvconf`.
+    LinuxResolvconf,
+    /// Linux `/etc/resolv.conf` fallback.
+    LinuxFile,
+}
+
+impl From<&aevan_tun::DnsContext> for JournalDnsContext {
+    fn from(context: &aevan_tun::DnsContext) -> Self {
+        match context {
+            aevan_tun::DnsContext::Unspecified => Self::Unspecified,
+            aevan_tun::DnsContext::MacosService(service) => Self::MacosService {
+                service: service.clone(),
+            },
+            aevan_tun::DnsContext::LinuxResolved => Self::LinuxResolved,
+            aevan_tun::DnsContext::LinuxResolvconf => Self::LinuxResolvconf,
+            aevan_tun::DnsContext::LinuxFile => Self::LinuxFile,
+        }
+    }
+}
+
+impl From<&JournalDnsContext> for aevan_tun::DnsContext {
+    fn from(context: &JournalDnsContext) -> Self {
+        match context {
+            JournalDnsContext::Unspecified => Self::Unspecified,
+            JournalDnsContext::MacosService { service } => Self::MacosService(service.clone()),
+            JournalDnsContext::LinuxResolved => Self::LinuxResolved,
+            JournalDnsContext::LinuxResolvconf => Self::LinuxResolvconf,
+            JournalDnsContext::LinuxFile => Self::LinuxFile,
+        }
+    }
+}
+
 /// A serializable [`Change`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -99,6 +145,9 @@ pub enum JournalChange {
         old: Vec<IpAddr>,
         /// New set.
         new: Vec<IpAddr>,
+        /// Platform state captured at apply time.
+        #[serde(default)]
+        context: JournalDnsContext,
     },
     /// One route added.
     AddRoute {
@@ -127,9 +176,10 @@ impl From<&Change> for JournalChange {
                 old: old.iter().map(JournalRoute::from).collect(),
                 new: new.iter().map(JournalRoute::from).collect(),
             },
-            Change::SetDns { old, new } => Self::SetDns {
+            Change::SetDns { old, new, context } => Self::SetDns {
                 old: old.clone(),
                 new: new.clone(),
+                context: JournalDnsContext::from(context),
             },
             Change::AddRoute(route) => Self::AddRoute {
                 route: JournalRoute::from(route),
@@ -163,9 +213,10 @@ impl JournalChange {
                     .map(JournalRoute::to_route)
                     .collect::<Result<_, _>>()?,
             }),
-            Self::SetDns { old, new } => Ok(Change::SetDns {
+            Self::SetDns { old, new, context } => Ok(Change::SetDns {
                 old: old.clone(),
                 new: new.clone(),
+                context: aevan_tun::DnsContext::from(context),
             }),
             Self::AddRoute { route } => Ok(Change::AddRoute(route.to_route()?)),
             Self::RemoveRoute { route } => Ok(Change::RemoveRoute(route.to_route()?)),
@@ -513,6 +564,7 @@ mod tests {
             Change::SetDns {
                 old: Vec::new(),
                 new: vec![dns(18)],
+                context: aevan_tun::DnsContext::Unspecified,
             },
         ]
     }
@@ -558,6 +610,7 @@ mod tests {
             Change::SetDns {
                 old: vec![dns(1)],
                 new: vec![dns(18)],
+                context: aevan_tun::DnsContext::MacosService("Wi-Fi".into()),
             },
             Change::AddRoute(route(3)),
             Change::RemoveRoute(route(4)),
@@ -614,7 +667,8 @@ mod tests {
             applied[0],
             Change::SetDns {
                 old: vec![dns(18)],
-                new: Vec::new()
+                new: Vec::new(),
+                context: aevan_tun::DnsContext::Unspecified,
             }
         );
         assert_eq!(applied[1], Change::RemoveRoute(route(1)));

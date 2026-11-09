@@ -12,9 +12,13 @@
 //! * Windows: `netsh interface ipv4` (address, subinterface MTU, DNS servers,
 //!   routes). `netsh interface ipv4 delete route` backs out a route.
 //! * Linux: `ip addr add|del`, `ip link set ... mtu`, `ip route add|del`.
-//!   systemd-resolved/resolvconf DNS integration is a documented TODO.
-//! * macOS: `ifconfig utunN`, `route -n add|delete`. `scutil` DNS integration
-//!   is a documented TODO.
+//!   DNS uses systemd-resolved (`resolvectl`), then `resolvconf`, then an
+//!   `/etc/resolv.conf` backup fallback, selected at apply time and recorded
+//!   in the journal so revert uses the same mechanism.
+//! * macOS: `ifconfig utunN`, `route -n add|delete`. DNS uses `networksetup`
+//!   on the primary network service, recording the previous servers and the
+//!   service name. This is interface-wide DNS: the gateway does not push search
+//!   domains, so per-domain split DNS is not available.
 //!
 //! No applier elevates. [`platform_applier`] checks the platform prerequisite
 //! first and returns [`crate::TunError::Permission`] or
@@ -35,6 +39,10 @@ pub trait Applier: RollbackBackend {
 impl RollbackBackend for Box<dyn Applier> {
     fn apply(&mut self, change: &Change) -> Result<(), TunError> {
         (**self).apply(change)
+    }
+
+    fn prepare(&mut self, change: &mut Change) -> Result<(), TunError> {
+        (**self).prepare(change)
     }
 }
 
@@ -96,6 +104,7 @@ pub fn plan(config: &crate::device::DeviceConfig) -> Vec<Change> {
         changes.push(Change::SetDns {
             old: Vec::new(),
             new: config.dns.clone(),
+            context: crate::rollback::DnsContext::Unspecified,
         });
     }
     changes

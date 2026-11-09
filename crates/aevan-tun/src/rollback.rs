@@ -13,6 +13,26 @@ use std::net::IpAddr;
 use crate::error::TunError;
 use crate::route::Route;
 
+/// Platform state captured when a DNS change is first applied.
+///
+/// The journal persists this next to the old server list, so a revert after a
+/// hard kill uses the same mechanism that applied the change even if the host
+/// now looks different.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum DnsContext {
+    /// No platform state was captured (an older journal or a non-DNS backend).
+    #[default]
+    Unspecified,
+    /// macOS: the network service the servers were set on.
+    MacosService(String),
+    /// Linux: systemd-resolved through `resolvectl`.
+    LinuxResolved,
+    /// Linux: `resolvconf`.
+    LinuxResolvconf,
+    /// Linux: the `/etc/resolv.conf` backup fallback.
+    LinuxFile,
+}
+
 /// A configuration change that can be inverted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Change {
@@ -43,6 +63,8 @@ pub enum Change {
         old: Vec<IpAddr>,
         /// New set.
         new: Vec<IpAddr>,
+        /// Platform state captured at apply time; drives an exact revert.
+        context: DnsContext,
     },
     /// One route was added.
     AddRoute(Route),
@@ -66,9 +88,10 @@ impl Change {
                 old: new.clone(),
                 new: old.clone(),
             },
-            Self::SetDns { old, new } => Self::SetDns {
+            Self::SetDns { old, new, context } => Self::SetDns {
                 old: new.clone(),
                 new: old.clone(),
+                context: context.clone(),
             },
             Self::AddRoute(route) => Self::RemoveRoute(route.clone()),
             Self::RemoveRoute(route) => Self::AddRoute(route.clone()),
@@ -89,6 +112,15 @@ pub enum UndoOutcome {
 pub trait RollbackBackend {
     /// Apply one change.
     fn apply(&mut self, change: &Change) -> Result<(), TunError>;
+
+    /// Capture platform state for a forward change before it is journaled.
+    ///
+    /// The default is a no-op. DNS backends use it to record the old servers
+    /// and the mechanism they selected, so the journal can invert the change
+    /// exactly even after a restart.
+    fn prepare(&mut self, _change: &mut Change) -> Result<(), TunError> {
+        Ok(())
+    }
 
     /// Whether the recorded device/interface alias currently exists.
     ///
@@ -131,6 +163,14 @@ impl<B: RollbackBackend> Session<B> {
         self.backend.apply(&change)?;
         self.undo.push(change);
         Ok(())
+    }
+
+    /// Capture platform state for a forward change before journaling it.
+    ///
+    /// Callers that write a write-ahead journal invoke this first, then record
+    /// the enriched change, then call [`Session::apply`].
+    pub fn prepare(&mut self, change: &mut Change) -> Result<(), TunError> {
+        self.backend.prepare(change)
     }
 
     /// Undo every recorded change in reverse order.
@@ -220,6 +260,7 @@ mod tests {
         let dns_change = Change::SetDns {
             old: vec![],
             new: vec![dns(18)],
+            context: DnsContext::Unspecified,
         };
         let added = Change::AddRoute(route(1));
 
@@ -239,7 +280,8 @@ mod tests {
             applied[4],
             Change::SetDns {
                 old: vec![dns(18)],
-                new: vec![]
+                new: vec![],
+                context: DnsContext::Unspecified,
             }
         );
         assert_eq!(
@@ -337,6 +379,7 @@ mod tests {
             Change::SetDns {
                 old: vec![dns(1)],
                 new: vec![dns(2)],
+                context: DnsContext::Unspecified,
             },
             Change::AddRoute(route(5)),
             Change::RemoveRoute(route(6)),

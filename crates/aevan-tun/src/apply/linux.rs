@@ -219,6 +219,7 @@ mod tests {
         let result = applier.apply(&Change::SetDns {
             old: Vec::new(),
             new: vec![IpAddr::V4(Ipv4Addr::new(10, 251, 3, 18))],
+            context: crate::rollback::DnsContext::Unspecified,
         });
         assert!(matches!(result, Err(TunError::Unsupported(_))));
         assert!(runner.calls().is_empty());

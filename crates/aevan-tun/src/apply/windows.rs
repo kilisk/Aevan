@@ -462,6 +462,7 @@ mod tests {
             .apply(Change::SetDns {
                 old: Vec::new(),
                 new: vec![v4([10, 251, 3, 18]), v4([10, 249, 10, 13])],
+                context: crate::rollback::DnsContext::Unspecified,
             })
             .expect("apply dns");
         session.rollback().expect("rollback");
@@ -535,6 +536,7 @@ mod tests {
             .apply(Change::SetDns {
                 old: Vec::new(),
                 new: vec![v4([10, 251, 3, 18])],
+                context: crate::rollback::DnsContext::Unspecified,
             })
             .expect("dns");
         session.rollback().expect("rollback");

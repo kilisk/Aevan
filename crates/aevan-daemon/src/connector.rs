@@ -587,7 +587,10 @@ impl ConnectGuard {
         let Some(session) = session.as_mut() else {
             return Err(AevanError::Config("connect teardown already ran".into()));
         };
-        for change in plan.changes() {
+        for mut change in plan.changes() {
+            // Capture the old DNS servers and the selected mechanism before
+            // the journal write, so a hard kill can revert exactly.
+            session.prepare(&mut change).map_err(tun_error)?;
             if let Some(journal) = journal.as_mut() {
                 journal.record(&change)?;
             }
@@ -817,7 +820,8 @@ mod tests {
             applied[4],
             Change::SetDns {
                 old: dns,
-                new: Vec::new()
+                new: Vec::new(),
+                context: aevan_tun::DnsContext::Unspecified,
             }
         );
         assert_eq!(applied[5], Change::RemoveRoute(route));

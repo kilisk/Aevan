@@ -21,6 +21,8 @@ pub struct CommandCall {
     pub program: String,
     /// Argument vector, exactly as passed to the program.
     pub args: Vec<String>,
+    /// Bytes written to the child's standard input, if any.
+    pub input: Vec<u8>,
 }
 
 impl CommandCall {
@@ -42,6 +44,21 @@ impl CommandCall {
 pub trait CommandRunner {
     /// Spawn `program` with `args` and collect its output.
     fn run(&mut self, program: &str, args: &[&str]) -> Result<Output, TunError>;
+
+    /// Spawn `program` with `args`, write `input` to its standard input and
+    /// collect its output.
+    ///
+    /// The default ignores the input so a runner that cannot feed a child does
+    /// not pretend it did. The real and recording runners implement it.
+    fn run_with_input(
+        &mut self,
+        program: &str,
+        args: &[&str],
+        input: &[u8],
+    ) -> Result<Output, TunError> {
+        let _ = input;
+        self.run(program, args)
+    }
 }
 
 /// The real runner: spawn the program directly and collect stdout/stderr.
@@ -55,15 +72,48 @@ impl CommandRunner for RealCommandRunner {
             .output()
             .map_err(TunError::Io)
     }
+
+    fn run_with_input(
+        &mut self,
+        program: &str,
+        args: &[&str],
+        input: &[u8],
+    ) -> Result<Output, TunError> {
+        use std::io::Write;
+        use std::process::Stdio;
+
+        let mut child = Command::new(program)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(TunError::Io)?;
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin.write_all(input).map_err(TunError::Io)?;
+        }
+        child.wait_with_output().map_err(TunError::Io)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct QueuedResponse {
+    program: String,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    success: bool,
 }
 
 /// A runner that records calls and reports success without spawning anything.
 ///
 /// Clones share the same record, so a test can keep one handle while the
-/// applier owns another.
+/// applier owns another. [`RecordingRunner::respond`] queues a specific output
+/// for the next call to a program; calls without a queued response succeed with
+/// empty output.
 #[derive(Debug, Default, Clone)]
 pub struct RecordingRunner {
     calls: Rc<RefCell<Vec<CommandCall>>>,
+    responses: Rc<RefCell<std::collections::VecDeque<QueuedResponse>>>,
 }
 
 impl RecordingRunner {
@@ -87,48 +137,94 @@ impl RecordingRunner {
             .collect()
     }
 
-    fn record(&self, program: &str, args: &[&str]) {
+    /// Queue a successful `stdout` for the next call to `program`.
+    pub fn respond(&self, program: &str, stdout: &str) -> &Self {
+        self.queue(program, stdout, "", true);
+        self
+    }
+
+    /// Queue a failing `stderr` for the next call to `program`.
+    pub fn respond_failure(&self, program: &str, stderr: &str) -> &Self {
+        self.queue(program, "", stderr, false);
+        self
+    }
+
+    fn queue(&self, program: &str, stdout: &str, stderr: &str, success: bool) {
+        self.responses.borrow_mut().push_back(QueuedResponse {
+            program: program.to_owned(),
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: stderr.as_bytes().to_vec(),
+            success,
+        });
+    }
+
+    fn record(&self, program: &str, args: &[&str], input: &[u8]) {
         self.calls.borrow_mut().push(CommandCall {
             program: program.to_owned(),
             args: args.iter().map(|arg| (*arg).to_owned()).collect(),
+            input: input.to_vec(),
         });
+    }
+
+    fn take_response(&self, program: &str) -> Output {
+        let mut responses = self.responses.borrow_mut();
+        let index = responses
+            .iter()
+            .position(|response| response.program == program);
+        let response = index.and_then(|index| responses.remove(index));
+        match response {
+            Some(response) => Output {
+                status: exit_status(if response.success { 0 } else { 1 }),
+                stdout: response.stdout,
+                stderr: response.stderr,
+            },
+            None => success_output(),
+        }
     }
 }
 
 impl CommandRunner for RecordingRunner {
     fn run(&mut self, program: &str, args: &[&str]) -> Result<Output, TunError> {
-        self.record(program, args);
-        Ok(success_output())
+        self.record(program, args, &[]);
+        Ok(self.take_response(program))
+    }
+
+    fn run_with_input(
+        &mut self,
+        program: &str,
+        args: &[&str],
+        input: &[u8],
+    ) -> Result<Output, TunError> {
+        self.record(program, args, input);
+        Ok(self.take_response(program))
     }
 }
 
 fn success_output() -> Output {
     Output {
-        status: success_status(),
+        status: exit_status(0),
         stdout: Vec::new(),
         stderr: Vec::new(),
     }
 }
 
 #[cfg(unix)]
-fn success_status() -> std::process::ExitStatus {
+fn exit_status(code: i32) -> std::process::ExitStatus {
     use std::os::unix::process::ExitStatusExt;
-    std::process::ExitStatus::from_raw(0)
+    std::process::ExitStatus::from_raw(code << 8)
 }
 
 #[cfg(windows)]
-fn success_status() -> std::process::ExitStatus {
+fn exit_status(code: i32) -> std::process::ExitStatus {
     use std::os::windows::process::ExitStatusExt;
-    std::process::ExitStatus::from_raw(0)
+    std::process::ExitStatus::from_raw(code as u32)
 }
 
 #[cfg(not(any(unix, windows)))]
-fn success_status() -> std::process::ExitStatus {
+fn exit_status(code: i32) -> std::process::ExitStatus {
     // No portable constructor is available. The platform fallback has no
     // applier anyway, so this value is never observable.
-    use std::os::raw::c_int;
-    let raw: c_int = 0;
-    let _ = raw;
+    let _ = code;
     panic!("no exit-status constructor for this platform")
 }
 
@@ -158,7 +254,9 @@ mod tests {
         let call = CommandCall {
             program: "netsh".into(),
             args: vec!["name=Aevan".into(), "address=10.0.0.1".into()],
+            input: Vec::new(),
         };
         assert_eq!(call.display(), "netsh name=Aevan address=10.0.0.1");
     }
+
 }
