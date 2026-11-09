@@ -194,7 +194,18 @@ jobs:
         run: |
           set -euo pipefail
           deb="$(ls target/dist/aevan_*_amd64.deb)"
-          dpkg-deb --info "$deb"
+          echo "== diagnostics =="
+          ls -l "$deb"
+          ar t "$deb" || true
+          tar --version | head -1 || true
+          echo "TAR=${TAR:-unset} TAR_OPTIONS=${TAR_OPTIONS:-unset}"
+          member="$(ar t "$deb" | grep -E '^control\.tar' || true)"
+          echo "control member: $member"
+          ar p "$deb" "$member" > /tmp/control.tar || true
+          file /tmp/control.tar || true
+          tar tvf /tmp/control.tar || echo "tar could not read the control member"
+          echo "== dpkg-deb =="
+          dpkg-deb --info "$deb" || { echo "dpkg-deb --info failed"; exit 1; }
           dpkg-deb --contents "$deb"
           for path in \
             ./usr/bin/aevan ./usr/bin/aevand ./usr/bin/aevan-gui \
