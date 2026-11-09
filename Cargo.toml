@@ -21,6 +21,7 @@ iced = { version = "0.13", default-features = false, features = ["wgpu", "tokio"
 md-5 = "0.10"
 aevan-core = { path = "crates/aevan-core" }
 aevan-daemon = { path = "crates/aevan-daemon" }
+aevan-instance = { path = "crates/aevan-instance" }
 aevan-nc = { path = "crates/aevan-nc" }
 aevan-proto = { path = "crates/aevan-proto" }
 aevan-secrets = { path = "crates/aevan-secrets" }

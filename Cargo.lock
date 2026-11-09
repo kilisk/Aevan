@@ -41,6 +41,7 @@ version = "0.2.0"
 dependencies = [
  "aevan-core",
  "aevan-daemon",
+ "aevan-instance",
  "aevan-nc",
  "aevan-proto",
  "aevan-tun",
@@ -88,6 +89,8 @@ version = "0.2.0"
 dependencies = [
  "aevan-core",
  "aevan-daemon",
+ "aevan-instance",
+ "aevan-proto",
  "aevan-secrets",
  "iced",
  "notify-rust",
@@ -107,6 +110,16 @@ name = "aevan-ift"
 version = "0.2.0"
 dependencies = [
  "aevan-core",
+]
+
+[[package]]
+name = "aevan-instance"
+version = "0.2.0"
+dependencies = [
+ "aevan-core",
+ "aevan-daemon",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

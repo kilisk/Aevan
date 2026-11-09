@@ -20,6 +20,8 @@ winresource = { workspace = true }
 iced = { workspace = true }
 aevan-core = { workspace = true }
 aevan-daemon = { workspace = true }
+aevan-instance = { workspace = true }
+aevan-proto = { workspace = true }
 aevan-secrets = { workspace = true }
 notify-rust = { workspace = true }
 serde = { workspace = true }

@@ -14,6 +14,7 @@
 mod app;
 mod console;
 mod daemon_bridge;
+mod instance;
 mod notifications;
 mod tray;
 mod view_model;
@@ -60,6 +61,17 @@ fn main() -> ExitCode {
 
     if args.headless {
         return headless(args.json);
+    }
+
+    // One GUI per user: the first process keeps the endpoint and the window;
+    // every later start asks it to show and exits without a window or tray.
+    match instance::claim_and_serve() {
+        Ok(aevan_instance::InstanceRole::Secondary) => return ExitCode::SUCCESS,
+        Ok(aevan_instance::InstanceRole::Primary) => {}
+        Err(error) => {
+            eprintln!("aevan-gui: cannot start the single-instance endpoint: {error}");
+            return ExitCode::FAILURE;
+        }
     }
 
     let store = match ProfileStore::default_path().and_then(|path| ProfileStore::load(&path)) {
