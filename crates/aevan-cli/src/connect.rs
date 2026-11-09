@@ -8,7 +8,7 @@
 use serde::Serialize;
 use zeroize::Zeroizing;
 
-use aevan_core::{AevanError, AevanResult};
+use aevan_core::{AevanError, AevanResult, Profile};
 use aevan_daemon::client::{self, ClientError};
 use aevan_daemon::connector::{self, ApplyPlan, ConnectOptions, ConnectionInfo, TunnelControl};
 use aevan_daemon::{journal, Request, SecretString};
@@ -116,12 +116,7 @@ fn via_daemon(profile_name: Option<&str>, flags: &ConnectFlags) -> AevanResult<(
         None
     };
 
-    let request = Request::connect(
-        Some(profile.name.clone()),
-        username,
-        SecretString::new(password.as_str().to_owned()),
-        token.map(|token| SecretString::new(token.as_str().to_owned())),
-    );
+    let request = connect_request(&profile, username, password, token);
 
     // The daemon stays a deliberate, visible thing: only `aevan` with no
     // subcommand starts it implicitly. `aevan connect` reports the reach failure
@@ -134,6 +129,26 @@ fn via_daemon(profile_name: Option<&str>, flags: &ConnectFlags) -> AevanResult<(
     let status = answer.response.status.unwrap_or_default();
     common::print_status(&status, flags.json, &answer.endpoint);
     Ok(())
+}
+
+/// Build the version-2 connect request from the locally resolved profile.
+///
+/// The CLI owns profile resolution; the daemon receives only the connection
+/// parameters it needs, so a root daemon never reads this user's store.
+fn connect_request(
+    profile: &Profile,
+    username: String,
+    password: Zeroizing<String>,
+    token: Option<Zeroizing<String>>,
+) -> Request {
+    Request::connect(
+        Some(profile.name.clone()),
+        Some(profile.url.clone()),
+        Some(profile.realm.clone()),
+        username,
+        SecretString::new(password.as_str().to_owned()),
+        token.map(|token| SecretString::new(token.as_str().to_owned())),
+    )
 }
 
 struct ForegroundControl {
@@ -261,4 +276,37 @@ fn print_connected(info: &ConnectionInfo, json: bool) {
         );
     }
     tracing::info!("ESP data plane running; press Ctrl+C to disconnect");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_connect_request_carries_what_the_profile_holds() {
+        let profile = Profile::new(
+            "example",
+            "https://vpn.example.net/example_realm",
+            "example_realm",
+        )
+        .expect("profile");
+
+        let request = connect_request(
+            &profile,
+            "example_user".into(),
+            Zeroizing::new("hunter2".into()),
+            None,
+        );
+
+        assert_eq!(request.schema_version, aevan_daemon::SCHEMA_VERSION);
+        assert_eq!(request.command, "connect");
+        assert_eq!(request.profile.as_deref(), Some("example"));
+        assert_eq!(request.gateway_url.as_deref(), Some(profile.url.as_str()));
+        assert_eq!(request.realm.as_deref(), Some(profile.realm.as_str()));
+        assert_eq!(request.username.as_deref(), Some("example_user"));
+        assert_eq!(
+            request.password.as_ref().map(SecretString::expose),
+            Some("hunter2")
+        );
+    }
 }
