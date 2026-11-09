@@ -52,6 +52,16 @@ protocol is described in [docs/PROTOCOL.md](docs/PROTOCOL.md).
   corporate gateway may be blocked or detected by the gateway's host-checking
   features; check with your administrator before using it.
 
+## Platform support
+
+| Platform | Status |
+|---|---|
+| **Windows 10/11** | Complete: login, oNCP handshake, ESP tunnel, daemon, tray GUI, installers |
+| **macOS** | Builds, installs, runs the CLI, daemon and GUI, and can sign in and complete the handshake. **The `utun` backend is not implemented, so `aevan connect` fails with a typed "unsupported" error and no tunnel is created.** Nothing on the machine's network is touched. |
+| **Linux** | Same as macOS: the `tun` backend is not implemented yet, so no tunnel. Packaging (tarball, `.deb`, `.rpm`) exists for the CLI/daemon/GUI once that backend lands. |
+
+Only the Windows data plane is functional today; the macOS and Linux backends are the next planned work.
+
 ## Install
 
 Windows: use `aevan-<version>-x64.msi` (per-machine, Administrator) or the
