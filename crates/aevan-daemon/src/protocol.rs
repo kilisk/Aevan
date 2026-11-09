@@ -17,7 +17,16 @@ use zeroize::Zeroizing;
 use aevan_core::AevanError;
 
 /// Version of the control protocol and of every JSON document it carries.
-pub const SCHEMA_VERSION: u32 = 1;
+///
+/// Version 2 lets the client resolve the profile and carry the connection
+/// parameters, so a root daemon never has to read a per-user profile store.
+pub const SCHEMA_VERSION: u32 = 2;
+
+/// Oldest protocol version the daemon still accepts.
+///
+/// A version-1 request has no connection parameters and falls back to the
+/// daemon-side profile store lookup.
+pub const MIN_SCHEMA_VERSION: u32 = 1;
 
 /// Maximum accepted request line, including the newline.
 pub const MAX_LINE_BYTES: usize = 64 * 1024;
@@ -78,8 +87,17 @@ pub struct Request {
     /// `status`, `connect`, `disconnect`, `logs` or `shutdown`.
     pub command: String,
     /// Profile name for `connect` and `disconnect`.
+    ///
+    /// For `connect` it is a display label in version 2; the connection
+    /// parameters travel in `gateway_url` and `realm`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
+    /// Gateway URL for `connect` in version 2. Not secret.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway_url: Option<String>,
+    /// Authentication realm for `connect` in version 2. Not secret.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub realm: Option<String>,
     /// Username for `connect`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub username: Option<String>,
@@ -107,6 +125,8 @@ impl Request {
             schema_version: SCHEMA_VERSION,
             command: command.to_owned(),
             profile: None,
+            gateway_url: None,
+            realm: None,
             username: None,
             password: None,
             token: None,
@@ -126,15 +146,19 @@ impl Request {
         Self::command("recover")
     }
 
-    /// `connect` with terminal-collected credentials.
+    /// `connect` with client-resolved connection parameters and credentials.
     pub fn connect(
         profile: Option<String>,
+        gateway_url: Option<String>,
+        realm: Option<String>,
         username: String,
         password: SecretString,
         token: Option<SecretString>,
     ) -> Self {
         Self {
             profile,
+            gateway_url,
+            realm,
             username: Some(username),
             password: Some(password),
             token,
@@ -165,9 +189,12 @@ impl Request {
         Self::command("shutdown")
     }
 
-    /// Whether the peer speaks the protocol version this build implements.
+    /// Whether this build accepts the peer's protocol version.
+    ///
+    /// Version 1 is still accepted so an older CLI keeps working against a new
+    /// daemon; it uses the legacy store lookup.
     pub fn schema_supported(&self) -> bool {
-        self.schema_version == SCHEMA_VERSION
+        (MIN_SCHEMA_VERSION..=SCHEMA_VERSION).contains(&self.schema_version)
     }
 }
 
@@ -427,6 +454,8 @@ mod tests {
             Request::status(),
             Request::connect(
                 Some("example".into()),
+                None,
+                None,
                 "example_user".into(),
                 SecretString::new("hunter2"),
                 None,
@@ -445,6 +474,8 @@ mod tests {
     fn request_round_trips_and_credentials_are_redacted_in_debug() {
         let request = Request::connect(
             Some("example".into()),
+            Some("https://vpn.example.net/example_realm".into()),
+            Some("example_realm".into()),
             "example_user".into(),
             SecretString::new("hunter2"),
             Some(SecretString::new("123456")),
@@ -485,7 +516,7 @@ mod tests {
         };
         let response = Response::status("status", report);
         let json = serde_json::to_string(&response).expect("json");
-        assert!(json.contains("\"schema_version\":1"));
+        assert!(json.contains("\"schema_version\":2"));
         for secret in ["password", "token", "cookie", "key", "spi"] {
             assert!(!json.contains(secret), "status leaked {secret}: {json}");
         }
@@ -518,6 +549,53 @@ mod tests {
         assert!(!response.ok);
         assert_eq!(response.exit_code, Some(exit_code::AUTH_REJECTED));
         assert_eq!(response.into_error().exit_code(), exit_code::AUTH_REJECTED);
+    }
+
+    #[test]
+    fn version_one_requests_are_still_supported() {
+        let mut request = Request::connect(
+            Some("example".into()),
+            None,
+            None,
+            "example_user".into(),
+            SecretString::new("hunter2"),
+            None,
+        );
+        request.schema_version = 1;
+        assert!(request.schema_supported());
+        assert!(json_fields_missing(&request));
+    }
+
+    fn json_fields_missing(request: &Request) -> bool {
+        let json = serde_json::to_string(request).expect("json");
+        !json.contains("gateway_url") && !json.contains("realm")
+    }
+
+    #[test]
+    fn a_version_outside_the_supported_range_is_rejected() {
+        let mut request = Request::status();
+        request.schema_version = 0;
+        assert!(!request.schema_supported());
+        request.schema_version = SCHEMA_VERSION + 1;
+        assert!(!request.schema_supported());
+    }
+
+    #[test]
+    fn the_connection_parameters_round_trip() {
+        let request = Request::connect(
+            Some("example".into()),
+            Some("https://vpn.example.net/example_realm".into()),
+            Some("example_realm".into()),
+            "example_user".into(),
+            SecretString::new("hunter2"),
+            None,
+        );
+        let json = serde_json::to_string(&request).expect("json");
+        assert!(json.contains("\"gateway_url\":\"https://vpn.example.net/example_realm\""));
+        assert!(json.contains("\"realm\":\"example_realm\""));
+        let parsed: Request = serde_json::from_str(&json).expect("parse");
+        assert_eq!(parsed.gateway_url, request.gateway_url);
+        assert_eq!(parsed.realm, request.realm);
     }
 
     #[test]

@@ -62,6 +62,6 @@ mod tests {
 
     #[test]
     fn the_public_schema_version_is_stable() {
-        assert_eq!(SCHEMA_VERSION, 1);
+        assert_eq!(SCHEMA_VERSION, 2);
     }
 }
