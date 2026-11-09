@@ -74,6 +74,11 @@ pub fn is_installed() -> bool {
     false
 }
 
+/// The exact command used to kickstart the installed job as the current user.
+pub fn kickstart_command() -> String {
+    format!("/bin/launchctl kickstart -k system/{LABEL}")
+}
+
 #[cfg(target_os = "macos")]
 pub fn install(program: &Path) -> Result<(), String> {
     imp::install(program)
@@ -84,6 +89,25 @@ pub fn install(_program: &Path) -> Result<(), String> {
     Err("installing a LaunchDaemon is only implemented on macOS".into())
 }
 
+/// Install the LaunchDaemon and report the exact command, status and stderr so
+/// the GUI can write its owner-only start log.
+#[cfg(target_os = "macos")]
+pub fn install_detailed(program: &Path) -> crate::elevate::ScriptOutcome {
+    imp::install_detailed(program)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn install_detailed(_program: &Path) -> crate::elevate::ScriptOutcome {
+    crate::elevate::ScriptOutcome {
+        command: String::new(),
+        outcome: crate::elevate::StartOutcome::Failed(
+            "installing a LaunchDaemon is only implemented on macOS".into(),
+        ),
+        exit_status: None,
+        stderr: String::new(),
+    }
+}
+
 #[cfg(target_os = "macos")]
 pub fn kickstart() -> Result<(), String> {
     imp::kickstart()
@@ -92,6 +116,26 @@ pub fn kickstart() -> Result<(), String> {
 #[cfg(not(target_os = "macos"))]
 pub fn kickstart() -> Result<(), String> {
     Err("starting a LaunchDaemon is only implemented on macOS".into())
+}
+
+/// Re-arm the installed job behind the single admin prompt: bootstrap it if it
+/// is not loaded, then kickstart it. Used only when the unelevated kickstart is
+/// refused.
+#[cfg(target_os = "macos")]
+pub fn rearm_detailed() -> crate::elevate::ScriptOutcome {
+    imp::rearm_detailed()
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn rearm_detailed() -> crate::elevate::ScriptOutcome {
+    crate::elevate::ScriptOutcome {
+        command: String::new(),
+        outcome: crate::elevate::StartOutcome::Failed(
+            "starting a LaunchDaemon is only implemented on macOS".into(),
+        ),
+        exit_status: None,
+        stderr: String::new(),
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -131,11 +175,22 @@ mod imp {
     }
 
     pub fn install(program: &Path) -> Result<(), String> {
+        outcome_result(install_detailed(program).outcome)
+    }
+
+    pub fn install_detailed(program: &Path) -> elevate::ScriptOutcome {
         let contents = plist(program);
         let temporary =
             std::env::temp_dir().join(format!("aevan-{LABEL}-{}.plist", std::process::id()));
-        std::fs::write(&temporary, contents)
-            .map_err(|error| format!("could not stage the LaunchDaemon plist: {error}"))?;
+        if let Err(error) = std::fs::write(&temporary, contents) {
+            let message = format!("could not stage the LaunchDaemon plist: {error}");
+            return elevate::ScriptOutcome {
+                command: String::new(),
+                outcome: StartOutcome::Failed(message.clone()),
+                exit_status: None,
+                stderr: message,
+            };
+        }
 
         let script = format!(
             "/usr/bin/install -m 0644 -o root -g wheel {} {} && /bin/launchctl bootstrap system {}",
@@ -143,9 +198,23 @@ mod imp {
             posix_quote(OsStr::new(PLIST_PATH)),
             posix_quote(OsStr::new(PLIST_PATH)),
         );
-        let outcome = elevate::run_script_elevated(&script);
+        let outcome = elevate::run_script_elevated_captured(&script);
         let _ = std::fs::remove_file(&temporary);
+        outcome
+    }
 
+    pub fn rearm_detailed() -> elevate::ScriptOutcome {
+        // `bootstrap` may fail when the job is already loaded; the kickstart
+        // after it still runs, and its status is the reported one.
+        let script = format!(
+            "/bin/launchctl bootstrap system {} 2>/dev/null || true; {}",
+            posix_quote(OsStr::new(PLIST_PATH)),
+            super::kickstart_command()
+        );
+        elevate::run_script_elevated_captured(&script)
+    }
+
+    fn outcome_result(outcome: StartOutcome) -> Result<(), String> {
         match outcome {
             StartOutcome::Started => Ok(()),
             StartOutcome::Cancelled => Err(

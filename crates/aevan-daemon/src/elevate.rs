@@ -22,6 +22,23 @@ pub enum StartOutcome {
     Failed(String),
 }
 
+/// A captured elevated command: what ran, how it exited and what it said.
+///
+/// The daemon-start log uses this to name a failure. It deliberately carries
+/// only the command, status and stderr; callers never put credentials in an
+/// elevated start command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScriptOutcome {
+    /// The exact shell command passed to the administrator prompt.
+    pub command: String,
+    /// The outcome classification used by existing callers.
+    pub outcome: StartOutcome,
+    /// The process exit status, when one was observed.
+    pub exit_status: Option<i32>,
+    /// Captured stderr, verbatim.
+    pub stderr: String,
+}
+
 /// Start `executable` with `args` elevated.
 ///
 /// Windows shows the single UAC prompt. Other platforms report that this is
@@ -36,7 +53,13 @@ pub fn start_elevated(executable: &Path, args: &[&str]) -> StartOutcome {
 /// unsupported. The command is expected to set a non-zero exit on failure so
 /// the platform reports [`StartOutcome::Failed`] with the tool's own message.
 pub fn run_script_elevated(script: &str) -> StartOutcome {
-    imp::run_script_elevated(script)
+    run_script_elevated_captured(script).outcome
+}
+
+/// Run one shell command behind a single native administrator prompt and
+/// return its command, exit status and stderr for diagnostics.
+pub fn run_script_elevated_captured(script: &str) -> ScriptOutcome {
+    imp::run_script_elevated_captured(script)
 }
 
 /// Start `executable` without a console and without waiting for it.
@@ -53,7 +76,7 @@ mod imp {
     use std::path::Path;
     use std::ptr;
 
-    use super::StartOutcome;
+    use super::{ScriptOutcome, StartOutcome};
 
     const SEE_MASK_NOCLOSEPROCESS: u32 = 0x0000_0040;
     const SW_HIDE: i32 = 0;
@@ -178,8 +201,15 @@ mod imp {
             .map(|_child| ())
     }
 
-    pub fn run_script_elevated(_script: &str) -> StartOutcome {
-        StartOutcome::Failed("administrator shell scripts are only implemented on macOS".into())
+    pub fn run_script_elevated_captured(script: &str) -> ScriptOutcome {
+        ScriptOutcome {
+            command: script.to_owned(),
+            outcome: StartOutcome::Failed(
+                "administrator shell scripts are only implemented on macOS".into(),
+            ),
+            exit_status: None,
+            stderr: String::new(),
+        }
     }
 }
 
@@ -190,7 +220,7 @@ mod imp {
     use std::path::Path;
     use std::process::Command;
 
-    use super::StartOutcome;
+    use super::{ScriptOutcome, StartOutcome};
 
     /// Quote one argument for `/bin/sh` using single quotes.
     fn posix_quote(value: &OsStr) -> String {
@@ -261,10 +291,10 @@ mod imp {
     }
 
     pub fn start_elevated(executable: &Path, args: &[&str]) -> StartOutcome {
-        run_script_elevated(&command_line(executable, args))
+        run_script_elevated_captured(&command_line(executable, args)).outcome
     }
 
-    pub fn run_script_elevated(command: &str) -> StartOutcome {
+    pub fn run_script_elevated_captured(command: &str) -> ScriptOutcome {
         let script = format!(
             "do shell script {} with administrator privileges",
             apple_script_quote(command)
@@ -277,29 +307,44 @@ mod imp {
         {
             Ok(output) => output,
             Err(error) => {
-                return StartOutcome::Failed(format!("could not run osascript: {error}"));
+                let stderr = format!("could not run osascript: {error}");
+                return ScriptOutcome {
+                    command: command.to_owned(),
+                    outcome: StartOutcome::Failed(stderr.clone()),
+                    exit_status: None,
+                    stderr,
+                };
             }
         };
-        if output.status.success() {
-            return StartOutcome::Started;
-        }
-
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let lowered = stderr.to_ascii_lowercase();
-        if lowered.contains("user canceled")
-            || lowered.contains("user cancelled")
-            || stderr.contains("(-128)")
-        {
-            StartOutcome::Cancelled
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        let exit_status = output.status.code();
+        let outcome = if output.status.success() {
+            StartOutcome::Started
         } else {
-            let detail = stderr.trim();
-            if detail.is_empty() {
-                StartOutcome::Failed(
-                    "macOS refused the administrator command without a reason".into(),
-                )
+            let lowered = stderr.to_ascii_lowercase();
+            if lowered.contains("user canceled")
+                || lowered.contains("user cancelled")
+                || stderr.contains("(-128)")
+            {
+                StartOutcome::Cancelled
             } else {
-                StartOutcome::Failed(format!("macOS refused the administrator command: {detail}"))
+                let detail = stderr.trim();
+                if detail.is_empty() {
+                    StartOutcome::Failed(
+                        "macOS refused the administrator command without a reason".into(),
+                    )
+                } else {
+                    StartOutcome::Failed(format!(
+                        "macOS refused the administrator command: {detail}"
+                    ))
+                }
             }
+        };
+        ScriptOutcome {
+            command: command.to_owned(),
+            outcome,
+            exit_status,
+            stderr,
         }
     }
 
@@ -317,7 +362,7 @@ mod imp {
 mod imp {
     use std::path::Path;
 
-    use super::StartOutcome;
+    use super::{ScriptOutcome, StartOutcome};
 
     pub fn start_elevated(executable: &Path, _args: &[&str]) -> StartOutcome {
         StartOutcome::Failed(format!(
@@ -335,7 +380,14 @@ mod imp {
             .map(|_child| ())
     }
 
-    pub fn run_script_elevated(_script: &str) -> StartOutcome {
-        StartOutcome::Failed("administrator shell scripts are only implemented on macOS".into())
+    pub fn run_script_elevated_captured(_script: &str) -> ScriptOutcome {
+        ScriptOutcome {
+            command: String::new(),
+            outcome: StartOutcome::Failed(
+                "administrator shell scripts are only implemented on macOS".into(),
+            ),
+            exit_status: None,
+            stderr: String::new(),
+        }
     }
 }

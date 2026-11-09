@@ -113,16 +113,58 @@ pub fn start_daemon() -> Result<(), String> {
 fn start_daemon_beside(executable: &Path) -> Result<(), String> {
     use aevan_daemon::launchd;
 
-    if client::request(&Request::status(), Some(STATUS_TIMEOUT)).is_ok() {
-        return Ok(());
+    use crate::relaunch::{self, RelaunchOps};
+
+    struct MacOps<'a> {
+        executable: &'a Path,
     }
-    if launchd::is_installed() {
-        launchd::kickstart()?;
-    } else {
-        launchd::install(executable)?;
+
+    fn prompted_outcome(outcome: StartOutcome, action: &str) -> Result<(), String> {
+        match outcome {
+            StartOutcome::Started => Ok(()),
+            StartOutcome::Cancelled => Err(format!(
+                "{action} needs administrator approval; the prompt was dismissed"
+            )),
+            StartOutcome::Failed(message) => Err(message),
+        }
     }
-    client::wait_for_daemon(DAEMON_WAIT)
-        .map_err(|error| format!("the daemon did not answer within 10 seconds: {error}"))
+
+    impl RelaunchOps for MacOps<'_> {
+        fn socket_answers(&self) -> bool {
+            client::request(&Request::status(), Some(STATUS_TIMEOUT)).is_ok()
+        }
+
+        fn daemon_installed(&self) -> bool {
+            launchd::is_installed()
+        }
+
+        fn kickstart(&self) -> Result<(), String> {
+            launchd::kickstart()
+        }
+
+        fn kickstart_elevated(&self) -> Result<(), String> {
+            let outcome = launchd::rearm_detailed();
+            prompted_outcome(outcome.outcome, "starting the Aevan daemon")
+        }
+
+        fn install_elevated(&self) -> Result<(), String> {
+            let outcome = launchd::install_detailed(self.executable);
+            prompted_outcome(outcome.outcome, "installing the Aevan daemon")
+        }
+
+        fn wait_ready(&self) -> Result<(), String> {
+            client::wait_for_daemon(DAEMON_WAIT)
+                .map_err(|error| format!("the daemon did not answer within 10 seconds: {error}"))
+        }
+    }
+
+    let report = relaunch::relaunch(&MacOps { executable })?;
+    tracing::info!(
+        method = ?report.method,
+        prompted = report.prompted,
+        "daemon start finished"
+    );
+    Ok(())
 }
 
 #[cfg(not(target_os = "macos"))]

@@ -16,6 +16,10 @@ mod console;
 mod daemon_bridge;
 mod instance;
 mod notifications;
+// The relaunch decision is compiled and tested everywhere; only the macOS
+// daemon path calls it in the application.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod relaunch;
 mod tray;
 mod view_model;
 
