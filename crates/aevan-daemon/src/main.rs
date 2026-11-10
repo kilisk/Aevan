@@ -4,7 +4,7 @@
 //! Runs in the foreground, owns the control endpoint and the one live tunnel,
 //! and recovers an interrupted configuration journal before accepting requests.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 
@@ -165,8 +165,30 @@ fn run_daemon() -> ExitCode {
     }
 }
 
+/// Resolve the daemon's state directory.
+///
+/// launchd starts system daemons with **no `HOME`**, so `config_dir()` fails there even though the
+/// process is root and perfectly able to write its own state. Fall back to root's real home in that
+/// case instead of exiting 1 before the socket is ever opened.
+fn state_dir() -> AevanResult<PathBuf> {
+    let error = match aevan_core::paths::config_dir() {
+        Ok(dir) => return Ok(dir),
+        Err(error) => error,
+    };
+    // Root, but no HOME to resolve: launchd does exactly this.
+    #[cfg(target_os = "macos")]
+    if crate::server::process_is_root() {
+        return Ok(PathBuf::from("/var/root/Library/Application Support/aevan"));
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    if crate::server::process_is_root() {
+        return Ok(PathBuf::from("/root/.config/aevan"));
+    }
+    Err(error)
+}
+
 fn run_recover() -> u8 {
-    let config_dir = match aevan_core::paths::config_dir() {
+    let config_dir = match state_dir() {
         Ok(dir) => dir,
         Err(error) => {
             eprintln!("aevand: {error}");
@@ -241,7 +263,7 @@ fn fatal_line(error: &AevanError) -> String {
 }
 
 fn run(logs: LogHub) -> AevanResult<()> {
-    let config_dir = aevan_core::paths::config_dir()?;
+    let config_dir = state_dir()?;
     std::fs::create_dir_all(&config_dir)?;
     set_private_directory(&config_dir)?;
 

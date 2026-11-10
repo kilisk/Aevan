@@ -127,7 +127,7 @@ pub fn is_system_endpoint(path: &std::path::Path) -> bool {
 }
 
 #[cfg(unix)]
-fn process_is_root() -> bool {
+pub(crate) fn process_is_root() -> bool {
     unix_uid::is_root()
 }
 
