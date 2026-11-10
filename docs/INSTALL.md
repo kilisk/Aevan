@@ -26,7 +26,7 @@ Version 0.2.2 is the current build.
 | Windows 10/11 x64 | `aevan-<version>-x64.zip` | extract | No | the directory you extract |
 | macOS 13+ (arm64 + x86_64) | `aevan-<version>-arm64+x86_64.dmg` | open, drag `Aevan.app` to Applications | No, but macOS asks you to approve Aevan in Login Items & Extensions | `/Applications/Aevan.app` |
 | macOS 13+ (arm64 + x86_64) | `aevan-<version>-arm64+x86_64.pkg` | `installer` / double-click | Yes (`sudo`) | `/Applications/Aevan.app`, `/usr/local/bin` |
-| macOS 13+ (Homebrew) | `Casks/aevan.rb` | `brew install --cask` | No, but macOS asks you to approve Aevan in Login Items & Extensions | `/Applications/Aevan.app` |
+| macOS 13+ (Homebrew) | `Casks/aevan.rb` | `brew install --cask` | No, but the GUI asks for one administrator approval on an unsigned build | `/Applications/Aevan.app` |
 | Linux x86_64 | `aevan-<version>-x86_64-linux.tar.gz` | `install.sh` | Yes (`sudo`) | `/usr/local/bin`, `/etc/systemd/system` |
 | Debian/Ubuntu amd64 | `aevan_<version>_amd64.deb` | `apt` / `dpkg` | Yes (`sudo`) | `/usr/bin`, `/lib/systemd/system`, `/usr/share` |
 | Fedora/RHEL x86_64 | `aevan-<version>-1.x86_64.rpm` | `dnf` / `rpm` | Yes (`sudo`) | `/usr/bin`, `/lib/systemd/system`, `/usr/share` |
@@ -247,11 +247,16 @@ and Intel). The minimum was raised to 13.0 because the build uses
 2. Drag **Aevan** onto the **Applications** shortcut in the same window.
 3. Eject the disk image and open **Aevan** from Applications (or Spotlight).
 4. The app starts window-only. On the first tunnel action, the **Daemon
-   unavailable** banner offers **Start daemon**. That button registers the
-   bundled LaunchDaemon with ServiceManagement; macOS then asks you to approve
-   Aevan in **System Settings > Login Items & Extensions**. Until you approve it,
-   the window stays usable and names the outstanding approval; it does not retry
-   silently.
+   unavailable** banner offers **Start daemon**. That button first tries to
+   register the bundled LaunchDaemon with ServiceManagement. A Developer ID
+   signed build asks you to approve Aevan in **System Settings > Login Items &
+   Extensions**. The published build is ad-hoc signed, so ServiceManagement
+   refuses it and the same button falls back once to the legacy LaunchDaemon:
+   it writes `/Library/LaunchDaemons/com.github.kilisk.aevand.plist` and asks
+   for administrator approval one time. The daemon then has `RunAtLoad`, so
+   later launches never prompt again. Cancelling the prompt says `The helper was
+   not installed. Aevan needs administrator approval once.` and the window stays
+   usable; it does not retry silently.
 
 The DMG installs only `/Applications/Aevan.app`. The app embeds `aevand` in
 `Aevan.app/Contents/MacOS/`, so the drag install has no `/usr/local/bin`
@@ -265,8 +270,8 @@ by design, because a manual drag cannot know whether they are still in use.
 
 1. Quit Aevan from the menu-bar item. Quit disconnects a live tunnel first and
    then exits; the LaunchDaemon is only left idle.
-2. Remove the daemon registration while the app is still installed. In Settings
-   use **Unregister daemon**, or run:
+2. Remove the ServiceManagement registration while the app is still installed.
+   In Settings use **Unregister daemon**, or run:
 
    ```sh
    /Applications/Aevan.app/Contents/MacOS/aevan-gui --unregister-daemon
@@ -278,7 +283,8 @@ by design, because a manual drag cannot know whether they are still in use.
    rm -rf /Applications/Aevan.app
    ```
 
-4. If an older release installed a legacy plist, remove it too:
+4. Remove a legacy plist installed by the unsigned fallback (the published
+   build uses this path), or by an older release:
 
    ```sh
    sudo launchctl bootout system/com.github.kilisk.aevand 2>/dev/null || true
@@ -379,10 +385,11 @@ shasum -a 256 aevan-0.2.0-arm64+x86_64.pkg
 | `/usr/local/share/doc/aevan/` | README and licenses |
 
 The package does **not** register, load or start the LaunchDaemon during
-install. The first **Start daemon** in the GUI registers the bundled plist with
-ServiceManagement, and macOS asks you to approve Aevan in **System Settings >
-Login Items & Extensions**. There is no `launchctl` opt-in step and no
-administrator shell prompt.
+install. The first **Start daemon** in the GUI tries ServiceManagement; a
+Developer ID signed build then asks you to approve Aevan in **System Settings >
+Login Items & Extensions**. The published build is ad-hoc signed, so the GUI
+falls back once to the legacy LaunchDaemon with a single administrator prompt.
+There is no `launchctl` step for the user to run.
 
 The daemon then runs as `root` and reads the root profile store
 (`/var/root/Library/Application Support/aevan`). If you want the GUI and CLI to

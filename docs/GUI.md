@@ -28,12 +28,20 @@ and returns. `aevan-gui` itself never starts the daemon silently.
 
 On macOS the app bundle ships its LaunchDaemon plist at
 `Contents/Library/LaunchDaemons/com.github.kilisk.aevand.plist`. The explicit
-**Start daemon** action in Settings registers it with ServiceManagement
-(`SMAppService`); macOS then asks the user to approve Aevan in System Settings >
-Login Items & Extensions. There is no administrator shell prompt. Once approved,
-a reboot starts the root daemon and later starts reuse the answering system
-socket. If approval is still outstanding, the GUI says so and waits; it does not
-retry silently. `aevand` binds the system endpoint
+**Start daemon** action in Settings first tries ServiceManagement
+(`SMAppService`); a Developer ID signed build then asks the user to approve
+Aevan in System Settings > Login Items & Extensions. The published build is
+ad-hoc signed, so macOS refuses that registration before the approval UI
+appears. In that case the same button falls back once to the legacy
+LaunchDaemon install: it writes
+`/Library/LaunchDaemons/com.github.kilisk.aevand.plist` and runs
+`launchctl bootstrap` through one native administrator prompt. The helper has
+`RunAtLoad`, so later launches never prompt again. Cancelling that prompt says
+`The helper was not installed. Aevan needs administrator approval once.` and
+leaves the window usable; the GUI never loops the prompt. Once the daemon is
+registered or installed, a reboot starts the root daemon and later starts reuse
+the answering system socket. If approval is still outstanding, the GUI says so
+and waits; it does not retry silently. `aevand` binds the system endpoint
 when it runs as root (`/Library/Application Support/Aevan/aevan.sock`, mode
 0666 in a 0755 root:wheel directory); clients try that path first and then the
 per-user `~/Library/Application Support/aevan/aevan.sock`. `aevan status`
@@ -93,13 +101,16 @@ The window stays open with `Disconnect failed: <reason>` and two buttons:
 * **Cancel** — dismisses the dialog and returns to the connected view; the GUI
   keeps running.
 
-On macOS there is no password prompt for the helper. The first **Start daemon**
-registers the bundled LaunchDaemon with ServiceManagement and macOS may ask for
-approval in System Settings > Login Items & Extensions. Ordinary relaunches
-after approval reuse the answering system socket or an unelevated `launchctl
+On macOS a Developer ID signed build has no password prompt for the helper:
+the first **Start daemon** registers the bundled LaunchDaemon with
+ServiceManagement and macOS may ask for approval in System Settings > Login
+Items & Extensions. The published build is ad-hoc signed, so that registration
+is refused and the same action asks for administrator approval once to install
+the legacy LaunchDaemon; later relaunches never prompt again. Ordinary
+relaunches reuse the answering system socket or an unelevated `launchctl
 kickstart`. No tunnel action, Quit, or ordinary relaunch ever asks for a
-password. A failed start names itself in the banner from the daemon-start log
-(see below).
+password after that one install. A failed start names itself in the banner from
+the daemon-start log (see below).
 
 ## System tray / menu-bar item (Windows and macOS)
 
@@ -214,13 +225,16 @@ notification is shown for a plain `disconnected` transition or for repeated
 * `Connect` opens the connect sheet for that profile; `Settings` opens that
   profile's settings.
 * `Retry` performs one `status` probe. `Refresh` reloads `profiles.toml`.
-* When the daemon cannot be reached, the screen shows the control client's
-  exact reach-failure message (not-listening, access-denied or
-  protocol-mismatch) and a **Retry** action. Starting the daemon is the explicit
-  **Start daemon** action in Settings, never part of Connect. On Windows it
-  performs the same one-UAC-prompt start as the `aevan` launcher. On macOS it
-  checks the socket, then reads `SMAppService.status()`: enabled services may be
-  started again, unregistered services are registered, and a service that still
+* When the daemon cannot be reached, the screen names the endpoint in GUI
+  wording (not-listening, access-denied or protocol-mismatch) alongside the
+  **Start daemon** action in Settings; it never tells the reader to run a CLI
+  command. Starting the daemon is the explicit **Start daemon** action, never
+  part of Connect. On Windows it performs the same one-UAC-prompt start as the
+  `aevan` launcher. On macOS it checks the socket, then reads
+  `SMAppService.status()`: enabled services may be started again and
+  unregistered services are registered. If ServiceManagement refuses because
+  the build is ad-hoc signed, the GUI falls back once to the legacy
+  LaunchDaemon install described under **Running it**. A service that still
   requires approval tells the user to approve Aevan in System Settings > Login
   Items & Extensions. The Settings sheet also offers **Open Login Items &
   Extensions** and **Unregister daemon**. It then retries `status` and clears
@@ -229,9 +243,11 @@ notification is shown for a plain `disconnected` transition or for repeated
   `$HOME/Library/Logs/Aevan/daemon-start.log` (directory 0700, file 0600):
   timestamp, the exact command, exit status and stderr. The log never contains
   credentials or the tunnel key block. If a start fails, the banner quotes the
-  last three lines so the failure names itself. If the prompt is cancelled the
-  message stays and the button can be pressed again; it is never looped
-  automatically.
+  last three lines so the failure names itself. Every banner and error block
+  has a **Copy** button that puts the displayed text, including that log tail,
+  on the clipboard through the toolkit API and briefly shows **Copied**. If the
+  prompt is cancelled the message stays and the button can be pressed again; it
+  is never looped automatically.
 
 ### Connect sheet
 
@@ -473,8 +489,11 @@ network or elevation:
   view; the Windows shutdown decision stops only a daemon this GUI started,
   while the macOS keepalive daemon is never stopped;
 * the start decision uses an answering socket with no action, registers an
-  unregistered service once, reports approval without retrying, and never
-  registers or kickstarts while approval is outstanding;
+  unregistered service once, reports approval without retrying, never registers
+  or kickstarts while approval is outstanding, and installs the legacy
+  LaunchDaemon exactly once when ServiceManagement refuses an unsigned build;
+* clipboard text equals the displayed banner, including the daemon-start log
+  tail, and the brief Copied confirmation is generation-safe;
 * the daemon-start log records timestamp, command, exit status and stderr,
   tails correctly, and stays owner-only on Unix;
 * a stale Unix socket is removed so the next process becomes primary, a live

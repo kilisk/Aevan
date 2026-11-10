@@ -249,9 +249,12 @@ CLI/system install. The embedded `aevand` lets the GUI resolve a daemon beside
 its own executable instead of relying on `/usr/local/bin`, and the bundle
 contains `Contents/Library/LaunchDaemons/com.github.kilisk.aevand.plist`. The
 GUI's **Start daemon** action registers that plist with ServiceManagement
-(`SMAppService.daemon(plistName:)`); macOS then asks for approval in System
-Settings > Login Items & Extensions. Nothing is installed or loaded by the
-installer, and there is no administrator shell prompt.
+(`SMAppService.daemon(plistName:)`); a Developer ID signed build then asks for
+approval in System Settings > Login Items & Extensions. The published build is
+ad-hoc signed, so ServiceManagement refuses it and the GUI falls back once to
+the legacy install: it writes `/Library/LaunchDaemons/com.github.kilisk.aevand.plist`
+and runs `launchctl bootstrap` through one native administrator prompt. Nothing
+is installed or loaded by the installer itself.
 
 `AppIcon.icns` is built best-effort from `assets/branding/Aevan Icon.icon` with
 `actool` when available; otherwise the script renders an `.iconset` from the
@@ -263,7 +266,9 @@ The DMG is ad-hoc signed too when `codesign` accepts it; that step is
 best-effort and a failure only warns. Nothing is notarised, so Gatekeeper still
 warns. The `LaunchDaemon` plist ships inside `Aevan.app` and is **not loaded**
 by the package; the first **Start daemon** registers it and asks for approval in
-System Settings > Login Items & Extensions.
+System Settings > Login Items & Extensions. For the ad-hoc signed build the GUI
+falls back once to the legacy `/Library/LaunchDaemons` plist with a single
+administrator prompt.
 
 ### Linux
 
