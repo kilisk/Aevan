@@ -1328,7 +1328,7 @@ impl EspSession {
         // UDP batch. A stalled or erroring socket read must never prevent the
         // tunnel device from being drained.
         let mut sent = 0usize;
-        let device_error = None;
+        let mut device_error = None;
         if self.device_polling {
             loop {
                 let mut buffer = std::mem::take(&mut self.device_buffer);
@@ -1350,13 +1350,17 @@ impl EspSession {
                     }
                     Err(error) => {
                         self.device_buffer = buffer;
+                        device_error = Some(error.kind());
                         tracing::warn!(
                             fd = ?device.wait_handle(),
                             kind = ?error.kind(),
                             %error,
                             "ESP device read failed; keeping the loop alive"
                         );
-                        return Err(EspSessionError::Device(error.to_string()));
+                        if device_gone(&error) {
+                            return Err(EspSessionError::Device(error.to_string()));
+                        }
+                        break;
                     }
                 }
             }
@@ -2123,6 +2127,17 @@ fn transient(error: &io::Error) -> bool {
             | io::ErrorKind::Interrupted
             | io::ErrorKind::ConnectionReset
             | io::ErrorKind::ConnectionRefused
+    )
+}
+
+/// Whether a device read error means the tunnel device no longer exists.
+///
+/// A transient read failure keeps the loop alive; only these kinds end the
+/// session because retrying a closed or disconnected device cannot recover.
+fn device_gone(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::NotFound | io::ErrorKind::NotConnected | io::ErrorKind::BrokenPipe
     )
 }
 

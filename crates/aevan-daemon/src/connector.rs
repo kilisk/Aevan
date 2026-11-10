@@ -52,6 +52,13 @@ const ESP_IDLE_TIMEOUT: Duration = Duration::from_millis(50);
 /// Fallback ESP UDP port when KMP 301 group 8 attr 4 is absent.
 const DEFAULT_ESP_PORT: u16 = 4500;
 
+/// Consecutive readable-but-empty device drains before the watchdog trips.
+const DEVICE_POLL_LIE_LIMIT: u32 = 100;
+
+/// How long a connected device may go without producing a readable packet
+/// before the loop warns.
+const DEVICE_STALL_WARNING: Duration = Duration::from_secs(2);
+
 /// Options for one connect attempt.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ConnectOptions {
@@ -342,20 +349,69 @@ where
         "ESP loop starting"
     );
 
+    let mut wait_sources = sources;
     let mut readiness = EspReadiness::default();
+    let mut device_polling = true;
+    let mut zero_device_drains = 0u32;
+    let mut last_device_packet = Instant::now();
+    let mut last_stall_warning: Option<Instant> = None;
+    let mut last_error: Option<String> = None;
+
     loop {
         if control.should_stop() {
             return Ok(());
         }
-        let report = session.poll_once_observed(udp, device, Instant::now(), readiness)?;
+        let now = Instant::now();
+        let device_was_readable = readiness.device;
+        let report = session.poll_once_observed(udp, device, now, readiness)?;
         readiness = EspReadiness::default();
         control.stats(session.bytes_received(), session.bytes_sent());
+
+        if let Some(kind) = report.device_error {
+            last_error = Some(format!("{kind:?}"));
+        }
+
+        if device_polling {
+            if report.device_packets > 0 {
+                last_device_packet = now;
+                zero_device_drains = 0;
+            } else if device_was_readable {
+                zero_device_drains = zero_device_drains.saturating_add(1);
+                if zero_device_drains >= DEVICE_POLL_LIE_LIMIT {
+                    tracing::error!(
+                        fd = ?sources.device,
+                        consecutive = zero_device_drains,
+                        "ESP device reports readable but drained zero packets;                          stopping device polling so the bounded sleep can reveal the difference"
+                    );
+                    session.set_device_polling(false);
+                    device_polling = false;
+                    wait_sources.device = None;
+                }
+            } else {
+                zero_device_drains = 0;
+            }
+
+            if device_polling
+                && now.duration_since(last_device_packet) >= DEVICE_STALL_WARNING
+                && last_stall_warning
+                    .is_none_or(|at| now.duration_since(at) >= DEVICE_STALL_WARNING)
+            {
+                tracing::warn!(
+                    fd = ?sources.device,
+                    last_poll = ?report,
+                    last_error = ?last_error,
+                    "ESP device produced no readable packets for 2s while the tunnel is connected"
+                );
+                last_stall_warning = Some(now);
+            }
+        }
+
         if !report.worked {
             // Nothing was ready. Wait for either the socket or the device, with
             // a bounded timeout so keepalives, rekey timers and the stop flag
             // are still serviced.
-            if sources.udp.is_some() || sources.device.is_some() {
-                match platform::wait_readable(sources, ESP_IDLE_TIMEOUT) {
+            if wait_sources.udp.is_some() || wait_sources.device.is_some() {
+                match platform::wait_readable(wait_sources, ESP_IDLE_TIMEOUT) {
                     Ok(observed) => {
                         readiness = EspReadiness {
                             udp: observed.udp,
@@ -363,6 +419,7 @@ where
                         };
                     }
                     Err(error) => {
+                        last_error = Some(error.to_string());
                         tracing::debug!(%error, "ESP readiness wait failed; using a bounded sleep");
                         std::thread::sleep(ESP_IDLE_TIMEOUT);
                     }
@@ -557,6 +614,10 @@ impl aevan_nc::EspDevice for TunEspDevice<'_> {
                 ) =>
             {
                 Ok(None)
+            }
+            Err(TunError::Io(error)) => Err(error),
+            Err(error @ TunError::Unsupported(_)) => {
+                Err(io::Error::new(io::ErrorKind::NotFound, error))
             }
             Err(error) => Err(io::Error::other(error)),
         }
