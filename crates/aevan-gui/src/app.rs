@@ -1492,9 +1492,9 @@ fn cmd_q(key: &Key, modifiers: Modifiers) -> Option<Message> {
 
 /// Move keyboard focus to the field the view model selected.
 ///
-/// `iced`'s `text_input::focus` is the same focusable operation used by
-/// `widget::focus_next`; driving it from the view model's list gives a stable
-/// declaration order and an explicit wrap at both ends.
+/// `iced`'s focusable operation is the same one used by
+/// `widget::operation::focus_next`; driving it from the view model's list gives
+/// a stable declaration order and an explicit wrap at both ends.
 fn focus_task(field: Option<FocusField>) -> Task<Message> {
     match field {
         Some(field) => iced::widget::operation::focus(field.id()),

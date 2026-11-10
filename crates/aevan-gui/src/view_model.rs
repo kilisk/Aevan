@@ -2797,6 +2797,34 @@ mod tests {
     }
 
     #[test]
+    fn focus_field_ids_are_stable_and_unique() {
+        let fields = [
+            (FocusField::ConnectUsername, "connect-username"),
+            (FocusField::ConnectPassword, "connect-password"),
+            (FocusField::ConnectToken, "connect-token"),
+            (FocusField::AddProfileName, "add-profile-name"),
+            (FocusField::AddProfileUrl, "add-profile-url"),
+            (FocusField::AddProfileRealm, "add-profile-realm"),
+            (FocusField::AddProfileUsername, "add-profile-username"),
+            (FocusField::SettingsTotp, "settings-totp"),
+        ];
+
+        for (field, id) in fields {
+            assert_eq!(field.id(), id, "the widget id for {field:?} changed");
+        }
+
+        for (index, (field, id)) in fields.iter().enumerate() {
+            assert!(
+                fields
+                    .iter()
+                    .skip(index + 1)
+                    .all(|(other, other_id)| other != field && other_id != id),
+                "focus ids and fields must be unique"
+            );
+        }
+    }
+
+    #[test]
     fn shift_tab_focus_reverses_and_wraps() {
         let mut vm = model();
         vm.select_profile("example", 0);
