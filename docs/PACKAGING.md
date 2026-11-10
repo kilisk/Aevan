@@ -229,9 +229,9 @@ and passed as `MACOSX_DEPLOYMENT_TARGET=13.0` to both architecture builds.
 `x86_64-apple-darwin`, joins each binary with `lipo`, and calls
 `packaging/macos/build-pkg.sh`. The script creates the GUI
 `Aevan.app` bundle (`CFBundleName`/`CFBundleDisplayName` `Aevan`, identifier
-still `com.github.kilisk.aevan`), embeds `aevand` in
-`Aevan.app/Contents/MacOS/` beside `aevan-gui`, and ad-hoc signs the bundle with
-`codesign --sign -` so the executable and resources validate without a
+still `com.github.kilisk.aevan`), installs all three binaries (`aevan`, `aevand`
+and `aevan-gui`) in `Aevan.app/Contents/MacOS/`, and ad-hoc signs the bundle
+with `codesign --sign -` so the executables and resources validate without a
 Developer ID. It then:
 
 - produces `aevan-<version>-arm64+x86_64.pkg` from a component root with
@@ -245,8 +245,10 @@ Developer ID. It then:
 - leaves `target/dist/Aevan.app` for upload.
 
 The DMG is the drag-install path. The `.pkg` is still built and remains the
-CLI/system install. The embedded `aevand` lets the GUI resolve a daemon beside
-its own executable instead of relying on `/usr/local/bin`, and the bundle
+CLI/system install. The embedded `aevan` and `aevand` let the GUI's
+**Install command-line tools** Settings action create `/usr/local/bin` symlinks
+to the bundle copies, and the embedded `aevand` lets the GUI resolve a daemon
+beside its own executable instead of relying on `/usr/local/bin`. The bundle
 contains `Contents/Library/LaunchDaemons/com.github.kilisk.aevand.plist`. The
 GUI's **Start daemon** action registers that plist with ServiceManagement
 (`SMAppService.daemon(plistName:)`); a Developer ID signed build then asks for
@@ -341,8 +343,9 @@ There is no tap repository today.
 - `package-macos`: `needs: test`, runs `just dist-macos` on `macos-latest`,
   mounts the new DMG read-only, and asserts the bundle `Info.plist` exists,
   `CFBundleIdentifier` is `com.github.kilisk.aevan`, `AppIcon.icns` is present,
-  both embedded binaries run `--version`, and the `Applications` symlink
-  resolves to `/Applications`; it always detaches. It uploads
+  all three embedded binaries run `--version` (`aevan`, `aevand`, `aevan-gui`),
+  and the `Applications` symlink resolves to `/Applications`; it always
+  detaches. It uploads
   `target/dist/*.pkg`, `target/dist/*.dmg` and `target/dist/Aevan.app` as
   `aevan-macos-universal`.
 - `package-linux`: `needs: test`, installs the pinned `just` and the `rpm`

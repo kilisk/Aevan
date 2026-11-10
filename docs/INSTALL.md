@@ -24,7 +24,7 @@ Version 0.2.2 is the current build.
 | --- | --- | --- | --- | --- |
 | Windows 10/11 x64 | `aevan-<version>-x64.msi` | `msiexec` | Yes, for the MSI | `C:\Program Files\aevan`, system `PATH`, Start menu shortcut |
 | Windows 10/11 x64 | `aevan-<version>-x64.zip` | extract | No | the directory you extract |
-| macOS 13+ (arm64 + x86_64) | `aevan-<version>-arm64+x86_64.dmg` | open, drag `Aevan.app` to Applications | No, but macOS asks you to approve Aevan in Login Items & Extensions | `/Applications/Aevan.app` |
+| macOS 13+ (arm64 + x86_64) | `aevan-<version>-arm64+x86_64.dmg` | open, drag `Aevan.app` to Applications | No, but macOS asks you to approve Aevan in Login Items & Extensions; **Settings → Install command-line tools** asks once | `/Applications/Aevan.app` (all three binaries inside it) |
 | macOS 13+ (arm64 + x86_64) | `aevan-<version>-arm64+x86_64.pkg` | `installer` / double-click | Yes (`sudo`) | `/Applications/Aevan.app`, `/usr/local/bin` |
 | macOS 13+ (Homebrew) | `Casks/aevan.rb` | `brew install --cask` | No, but the GUI asks for one administrator approval on an unsigned build | `/Applications/Aevan.app` |
 | Linux x86_64 | `aevan-<version>-x86_64-linux.tar.gz` | `install.sh` | Yes (`sudo`) | `/usr/local/bin`, `/etc/systemd/system` |
@@ -258,9 +258,24 @@ and Intel). The minimum was raised to 13.0 because the build uses
    not installed. Aevan needs administrator approval once.` and the window stays
    usable; it does not retry silently.
 
-The DMG installs only `/Applications/Aevan.app`. The app embeds `aevand` in
-`Aevan.app/Contents/MacOS/`, so the drag install has no `/usr/local/bin`
-dependency. For `aevan` and `aevand` on `PATH`, use the `.pkg` below.
+The DMG installs only `/Applications/Aevan.app`, but the bundle embeds all three
+binaries in `Aevan.app/Contents/MacOS/`: `aevan`, `aevand` and `aevan-gui`. The
+drag install therefore has no `/usr/local/bin` dependency, and the daemon is
+always resolved beside the GUI.
+
+To put the CLI and daemon on `PATH`, open **Settings** and choose **Install
+command-line tools**. This creates `/usr/local/bin/aevan` and
+`/usr/local/bin/aevand` as symlinks to the bundle copies through one
+administrator prompt. **Remove command-line tools** deletes them again. The same
+Settings row shows whether the links are not installed, installed at a path, or
+pointing elsewhere. If you move or rename `Aevan.app`, the next launch says the
+links are stale and offers the one-line fix: run **Install command-line tools**
+again. The installer refuses to overwrite a real file or a symlink that is not
+one of Aevan's own links.
+
+The `.pkg` below still installs `aevan` and `aevand` directly into
+`/usr/local/bin`; use it when you want a system package manager to own those
+files instead of the GUI-managed symlinks.
 
 ### Uninstalling the drag install
 
@@ -620,6 +635,7 @@ The profile store is kept.
 | --- | --- | --- | --- |
 | Install / uninstall a package | Administrator | `sudo` | writes `Program Files` / `PATH`, or `/Applications`, `/usr/local`, `/Library`, `/etc/systemd/system` |
 | Drag `Aevan.app` from the macOS DMG | n/a | No | writes only `/Applications/Aevan.app` |
+| **Install command-line tools** from the macOS DMG (Settings) | n/a | Yes, one prompt | creates symlinks in `/usr/local/bin` |
 | `aevand` creating the TUN adapter | Administrator | `sudo` / root (or `CAP_NET_ADMIN`) | `WintunCreateAdapter`, `utun`, `/dev/net/tun` and route/DNS changes are machine state |
 | Start the embedded daemon from the GUI (macOS) | n/a | Approve Aevan in System Settings > Login Items & Extensions | creates `utun` and changes routes/DNS as root |
 | Autostart | Administrator | `sudo` | scheduled task, LaunchDaemon or systemd unit |

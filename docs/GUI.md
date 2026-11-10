@@ -294,6 +294,15 @@ the selected profile asks for.
   `--remove-autostart` with one UAC prompt. On macOS and Linux it writes the
   per-user GUI login item described below with no elevation. If the state
   cannot be read, the screen says so instead of showing a guessed value.
+* Command-line tools (macOS DMG build): shows `not installed`, `installed at
+  <path>`, or `installed but pointing elsewhere`. **Install command-line
+  tools** creates `/usr/local/bin/aevan` and `/usr/local/bin/aevand` as
+  symlinks to the copies inside `Aevan.app/Contents/MacOS` behind one
+  administrator prompt; **Remove command-line tools** deletes them. Both actions
+  are idempotent. A real file or a symlink that is not one of Aevan's own links
+  is refused with the path named; the existing file is left untouched. If the
+  app bundle is moved, the next launch reports that the links are stale and the
+  same Install action repairs them.
 * Log level (displayed and cycled in memory; the GUI does not stream logs yet).
 * Daemon endpoint (named pipe on Windows, Unix socket elsewhere).
 
