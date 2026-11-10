@@ -737,7 +737,7 @@ mod tests {
     use std::path::PathBuf;
     use std::rc::Rc;
 
-    use aevan_tun::{RollbackBackend, Route};
+    use aevan_tun::{RollbackBackend, Route, RouteRecord};
 
     const KMP_301: &[u8] = include_bytes!("../../aevan-nc/tests/fixtures/ncp-config-kmp.bin");
 
@@ -868,6 +868,80 @@ mod tests {
 
         guard.teardown().expect("teardown");
         assert!(!path.exists(), "clean teardown removes the journal");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[derive(Clone, Default)]
+    struct ConflictApplier {
+        applied: Rc<RefCell<Vec<Change>>>,
+    }
+
+    impl RollbackBackend for ConflictApplier {
+        fn prepare(&mut self, change: &mut Change) -> Result<(), TunError> {
+            if let Change::AddRoute(route) = change {
+                *change = Change::ReplaceRoute {
+                    route: route.clone(),
+                    displaced: RouteRecord {
+                        destination: route.destination,
+                        prefix_len: route.prefix_len,
+                        gateway: Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))),
+                        interface: "en0".into(),
+                        flags: "UP,GATEWAY,DONE,STATIC".into(),
+                        metric: 0,
+                    },
+                    restore: false,
+                };
+            }
+            Ok(())
+        }
+
+        fn apply(&mut self, change: &Change) -> Result<(), TunError> {
+            self.applied.borrow_mut().push(change.clone());
+            Ok(())
+        }
+    }
+
+    impl Applier for ConflictApplier {
+        fn backend_name(&self) -> &'static str {
+            "test-conflict"
+        }
+    }
+
+    #[test]
+    fn a_conflicting_route_is_journalled_before_it_is_replaced() {
+        let (dir, path) = temp_path("conflict");
+        let journal = Journal::create(path.clone(), "aevan").expect("journal");
+        let applier = ConflictApplier::default();
+        let mut guard = ConnectGuard::new(None, Session::new(Box::new(applier)), Some(journal));
+        let route = Route::on_link(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 0)), 8).expect("route");
+        let plan = ApplyPlan {
+            device: "aevan".into(),
+            address: None,
+            prefix_len: 0,
+            mtu: None,
+            routes: vec![route],
+            dns: Vec::new(),
+        };
+
+        guard.apply_plan(&plan).expect("apply");
+        let document = crate::journal::load(&path).expect("load journal");
+        let recorded = document
+            .changes
+            .iter()
+            .find_map(|change| match change {
+                crate::journal::JournalChange::ReplaceRoute { displaced, .. } => Some(displaced),
+                _ => None,
+            })
+            .expect("the displaced route must be journalled");
+        assert_eq!(recorded.interface, "en0");
+        assert_eq!(recorded.flags, "UP,GATEWAY,DONE,STATIC");
+        assert_eq!(
+            recorded.gateway,
+            Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)))
+        );
+
+        guard.teardown().expect("teardown");
+        assert!(!path.exists());
         let _ = std::fs::remove_dir_all(dir);
     }
 
