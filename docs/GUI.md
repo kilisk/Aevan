@@ -26,13 +26,14 @@ shortcut does this). It ensures `aevand` is running — starting it with one UAC
 prompt if the control pipe is unavailable — then launches `aevan-gui` detached
 and returns. `aevan-gui` itself never starts the daemon silently.
 
-On macOS the `.pkg` installs the LaunchDaemon once and bootstraps it; a
-drag-installed app installs and bootstraps it from the explicit **Start daemon
-(Administrator)** action in Settings. After that a reboot starts the root daemon with no
-prompt, and the GUI only prompts once in the app's lifetime. On relaunch the
-GUI first uses the answering system socket, then tries an unelevated
-`launchctl kickstart` of the installed job; only a missing job or a refused
-kickstart asks for administrator approval. `aevand` binds the system endpoint
+On macOS the app bundle ships its LaunchDaemon plist at
+`Contents/Library/LaunchDaemons/com.github.kilisk.aevand.plist`. The explicit
+**Start daemon** action in Settings registers it with ServiceManagement
+(`SMAppService`); macOS then asks the user to approve Aevan in System Settings >
+Login Items & Extensions. There is no administrator shell prompt. Once approved,
+a reboot starts the root daemon and later starts reuse the answering system
+socket. If approval is still outstanding, the GUI says so and waits; it does not
+retry silently. `aevand` binds the system endpoint
 when it runs as root (`/Library/Application Support/Aevan/aevan.sock`, mode
 0666 in a 0755 root:wheel directory); clients try that path first and then the
 per-user `~/Library/Application Support/aevan/aevan.sock`. `aevan status`
@@ -92,10 +93,10 @@ The window stays open with `Disconnect failed: <reason>` and two buttons:
 * **Cancel** — dismisses the dialog and returns to the connected view; the GUI
   keeps running.
 
-On macOS, the only password prompt is the one-time daemon helper install (and
-the single administrator fallback for that same helper when macOS refuses the
-unelevated kickstart). Ordinary relaunches after the helper is installed never
-ask: they use the answering system socket or the unelevated `launchctl
+On macOS there is no password prompt for the helper. The first **Start daemon**
+registers the bundled LaunchDaemon with ServiceManagement and macOS may ask for
+approval in System Settings > Login Items & Extensions. Ordinary relaunches
+after approval reuse the answering system socket or an unelevated `launchctl
 kickstart`. No tunnel action, Quit, or ordinary relaunch ever asks for a
 password. A failed start names itself in the banner from the daemon-start log
 (see below).
@@ -161,21 +162,18 @@ Desktop notifications are shown for three transitions only:
 * recovery incomplete — includes the number of failed teardown steps.
 
 Notifications are emitted through a small `Notifier` trait; tests use a
-recording implementation. Windows and Linux use `notify-rust`; the production
-macOS path deliberately does **not** link `notify-rust`/`mac-notification-sys`,
-because that stack runs AppleScript in-process and a malformed script can abort
-the whole GUI. macOS instead spawns `/usr/bin/osascript` as a child process, so a
-refused notification cannot take the app down.
+recording implementation. Windows and Linux use `notify-rust`. macOS uses the
+UserNotifications framework directly (`objc2-user-notifications`): at startup it
+requests authorization for alert and sound, records granted or denied, and
+delivers each transition as a `UNNotificationRequest` with a nil trigger. There
+is no scripting bridge and no shell quoting anywhere.
 
-The macOS script is built by a pure quoting function: double quotes and
-backslashes are escaped and every control character (newline, carriage return,
-tab) becomes a space. Values such as `use default`, backticks and semicolons are
-inert literal data, and unit tests parse the generated script to prove it
-contains exactly the title and body literals. Notification text is built only
-from the state name, the tunnel address and the redacted reason, so it can never
-contain a password, one-time token or TOTP secret. A missing notification
-service is logged and ignored: the tray tooltip always carries the current
-state. Message handlers, notification delivery and tray callbacks run under
+When authorization is denied, the GUI says once that notifications are disabled
+in System Settings instead of failing silently; the tray tooltip still carries
+the current state. Notification text is built only from the state name, the
+tunnel address and the redacted reason, so it can never contain a password,
+one-time token or TOTP secret. A missing notification service is logged and
+ignored. Message handlers, notification delivery and tray callbacks run under
 `std::panic::catch_unwind`; a caught panic becomes a banner instead of aborting
 the UI (the workspace keeps `panic = "unwind"`).
 
@@ -204,16 +202,14 @@ notification is shown for a plain `disconnected` transition or for repeated
 * When the daemon cannot be reached, the screen shows the control client's
   exact reach-failure message (not-listening, access-denied or
   protocol-mismatch) and a **Retry** action. Starting the daemon is the explicit
-  **Start daemon (Administrator)** action in Settings, never part of Connect. On Windows
-  it performs the same one-UAC-prompt start as the `aevan` launcher. On macOS
-  it checks, in order: (a) does the system socket answer — use it and do
-  nothing; (b) is the LaunchDaemon installed but idle — run
-  `launchctl kickstart -k system/com.github.kilisk.aevand` as the logged-in
-  user, without elevation; (c) is it not installed — install
-  `/Library/LaunchDaemons/com.github.kilisk.aevand.plist` once behind a single
-  administrator prompt. A normal user's kickstart of an already-bootstrapped
-  system job may be refused; only then does the GUI fall back to the single
-  admin prompt. It then retries `status` and clears the banner on success.
+  **Start daemon** action in Settings, never part of Connect. On Windows it
+  performs the same one-UAC-prompt start as the `aevan` launcher. On macOS it
+  checks the socket, then reads `SMAppService.status()`: enabled services may be
+  started again, unregistered services are registered, and a service that still
+  requires approval tells the user to approve Aevan in System Settings > Login
+  Items & Extensions. The Settings sheet also offers **Open Login Items &
+  Extensions** and **Unregister daemon**. It then retries `status` and clears
+  the banner on success.
 * Every elevated or prompted daemon start appends to
   `$HOME/Library/Logs/Aevan/daemon-start.log` (directory 0700, file 0600):
   timestamp, the exact command, exit status and stderr. The log never contains
@@ -401,13 +397,13 @@ every build host; the Windows task path keeps its existing `schtasks` tests.
 * No credentials in argv or the environment.
 * No routes, DNS, MTU, adapter or driver access.
 * No silent daemon auto-start. `aevan` with no subcommand may start the daemon,
-  and the explicit **Start daemon (Administrator)** action may start it, but
-  opening `aevan-gui` never does.
+  and the explicit **Start daemon** action may start it, but opening
+  `aevan-gui` never does.
 * No profile creation/editing/removal; use `aevan profile add`.
 * No log streaming. The GUI only reads the tail of its own owner-only
   `daemon-start.log` to name a failed daemon start.
 * No tray on Linux (see above). macOS has a menu-bar item and delivers
-  notifications through a child `osascript`, never in-process AppleScript.
+  notifications through UserNotifications.
 * No password persistence; a TOTP secret is stored only in the owner-only
   secret store (Credential Manager on Windows, a 0600 file on macOS/Linux).
 * No service installation. The Settings switch does not install a service; it
@@ -454,9 +450,9 @@ network or elevation:
   shows `Disconnect failed` without exiting, and Cancel restores the connected
   view; the Windows shutdown decision stops only a daemon this GUI started,
   while the macOS keepalive daemon is never stopped;
-* the relaunch decision uses an answering socket with no action, kickstarts an
-  installed job without elevation, and only uses the one admin prompt for a
-  refused kickstart or a missing job;
+* the start decision uses an answering socket with no action, registers an
+  unregistered service once, reports approval without retrying, and never
+  registers or kickstarts while approval is outstanding;
 * the daemon-start log records timestamp, command, exit status and stderr,
   tails correctly, and stays owner-only on Unix;
 * a stale Unix socket is removed so the next process becomes primary, a live

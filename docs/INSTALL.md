@@ -24,9 +24,9 @@ Version 0.2.2 is the current build.
 | --- | --- | --- | --- | --- |
 | Windows 10/11 x64 | `aevan-<version>-x64.msi` | `msiexec` | Yes, for the MSI | `C:\Program Files\aevan`, system `PATH`, Start menu shortcut |
 | Windows 10/11 x64 | `aevan-<version>-x64.zip` | extract | No | the directory you extract |
-| macOS 11+ (arm64 + x86_64) | `aevan-<version>-arm64+x86_64.dmg` | open, drag `Aevan.app` to Applications | No, but the first daemon start asks for administrator approval | `/Applications/Aevan.app` |
-| macOS 11+ (arm64 + x86_64) | `aevan-<version>-arm64+x86_64.pkg` | `installer` / double-click | Yes (`sudo`) | `/Applications/Aevan.app`, `/usr/local/bin`, `/Library/LaunchDaemons` |
-| macOS 11+ (Homebrew) | `Casks/aevan.rb` | `brew install --cask` | No, but the first daemon start asks for administrator approval | `/Applications/Aevan.app` |
+| macOS 13+ (arm64 + x86_64) | `aevan-<version>-arm64+x86_64.dmg` | open, drag `Aevan.app` to Applications | No, but macOS asks you to approve Aevan in Login Items & Extensions | `/Applications/Aevan.app` |
+| macOS 13+ (arm64 + x86_64) | `aevan-<version>-arm64+x86_64.pkg` | `installer` / double-click | Yes (`sudo`) | `/Applications/Aevan.app`, `/usr/local/bin` |
+| macOS 13+ (Homebrew) | `Casks/aevan.rb` | `brew install --cask` | No, but macOS asks you to approve Aevan in Login Items & Extensions | `/Applications/Aevan.app` |
 | Linux x86_64 | `aevan-<version>-x86_64-linux.tar.gz` | `install.sh` | Yes (`sudo`) | `/usr/local/bin`, `/etc/systemd/system` |
 | Debian/Ubuntu amd64 | `aevan_<version>_amd64.deb` | `apt` / `dpkg` | Yes (`sudo`) | `/usr/bin`, `/lib/systemd/system`, `/usr/share` |
 | Fedora/RHEL x86_64 | `aevan-<version>-1.x86_64.rpm` | `dnf` / `rpm` | Yes (`sudo`) | `/usr/bin`, `/lib/systemd/system`, `/usr/share` |
@@ -239,22 +239,23 @@ used from a stable directory.
 > ad-hoc signed so the bundle is internally consistent, not signed with an
 > Apple Developer ID. Gatekeeper will warn on first launch.
 
-Requirements: macOS 11 or later; the app is universal (Apple silicon and
-Intel).
+Requirements: macOS 13 (Ventura) or later; the app is universal (Apple silicon
+and Intel). The minimum was raised to 13.0 because the build uses
+`SMAppService` from ServiceManagement.
 
 1. Open `aevan-<version>-arm64+x86_64.dmg`.
 2. Drag **Aevan** onto the **Applications** shortcut in the same window.
 3. Eject the disk image and open **Aevan** from Applications (or Spotlight).
 4. The app starts window-only. On the first tunnel action, the **Daemon
-   unavailable** banner offers **Start daemon (Administrator)**. That button
-   shows one native macOS administrator prompt and starts the embedded daemon.
-   If you dismiss it, the window stays usable and says the daemon needs
-   administrator approval; it never repeats the prompt on its own.
+   unavailable** banner offers **Start daemon**. That button registers the
+   bundled LaunchDaemon with ServiceManagement; macOS then asks you to approve
+   Aevan in **System Settings > Login Items & Extensions**. Until you approve it,
+   the window stays usable and names the outstanding approval; it does not retry
+   silently.
 
 The DMG installs only `/Applications/Aevan.app`. The app embeds `aevand` in
 `Aevan.app/Contents/MacOS/`, so the drag install has no `/usr/local/bin`
-dependency. For `aevan` and `aevand` on `PATH`, and for the opt-in
-`LaunchDaemon`, use the `.pkg` below.
+dependency. For `aevan` and `aevand` on `PATH`, use the `.pkg` below.
 
 ### Uninstalling the drag install
 
@@ -264,20 +265,27 @@ by design, because a manual drag cannot know whether they are still in use.
 
 1. Quit Aevan from the menu-bar item. Quit disconnects a live tunnel first and
    then exits; the LaunchDaemon is only left idle.
-2. Delete the app: drag `/Applications/Aevan.app` to the Trash, or run:
+2. Remove the daemon registration while the app is still installed. In Settings
+   use **Unregister daemon**, or run:
+
+   ```sh
+   /Applications/Aevan.app/Contents/MacOS/aevan-gui --unregister-daemon
+   ```
+
+3. Delete the app: drag `/Applications/Aevan.app` to the Trash, or run:
 
    ```sh
    rm -rf /Applications/Aevan.app
    ```
 
-3. Remove the LaunchDaemon and its installed plist:
+4. If an older release installed a legacy plist, remove it too:
 
    ```sh
-   sudo launchctl bootout system/com.github.kilisk.aevand
-   sudo rm /Library/LaunchDaemons/com.github.kilisk.aevand.plist
+   sudo launchctl bootout system/com.github.kilisk.aevand 2>/dev/null || true
+   sudo rm -f /Library/LaunchDaemons/com.github.kilisk.aevand.plist
    ```
 
-4. Remove the per-user support directory (profiles and the crash journal) and
+5. Remove the per-user support directory (profiles and the crash journal) and
    the daemon-start log:
 
    ```sh
@@ -296,8 +304,10 @@ with `brew install --cask`, run:
 brew uninstall --cask --zap aevan
 ```
 
-That removes the app, the LaunchDaemon plist, `~/Library/Application Support/
-aevan`, the logs, and the cask's cache/preferences/saved-state entries.
+That removes the app, the per-user support directory, the logs, and the cask's
+cache/preferences/saved-state entries. The ServiceManagement registration is
+removed by the in-app **Unregister daemon** action (or the command above) before
+the app is deleted.
 
 ### Opening an unsigned / ad-hoc-signed app anyway
 
@@ -328,9 +338,9 @@ shasum -a 256 aevan-<version>-arm64+x86_64.dmg
 > This package is **unsigned and not notarised**. Gatekeeper will warn on first
 > use. It is built and published as-is by CI; there is no Apple Developer ID.
 
-Requirements: macOS 11 or later; the package is universal (Apple silicon and
-Intel). Installing needs `sudo` because it writes `/Applications`,
-`/usr/local` and `/Library`.
+Requirements: macOS 13 (Ventura) or later; the package is universal (Apple
+silicon and Intel). Installing needs `sudo` because it writes `/Applications`
+and `/usr/local`.
 
 ```sh
 sudo installer -pkg aevan-0.2.0-arm64+x86_64.pkg -target /
@@ -365,16 +375,14 @@ shasum -a 256 aevan-0.2.0-arm64+x86_64.pkg
 | `/usr/local/bin/aevan` | CLI |
 | `/usr/local/bin/aevand` | daemon |
 | `/usr/local/bin/aevan-uninstall` | uninstaller |
-| `/Library/LaunchDaemons/com.github.kilisk.aevand.plist` | opt-in boot daemon |
+| `/Applications/Aevan.app/Contents/Library/LaunchDaemons/com.github.kilisk.aevand.plist` | bundled daemon definition |
 | `/usr/local/share/doc/aevan/` | README and licenses |
 
-The package does **not** load or start the LaunchDaemon during install. It is
-an explicit opt-in:
-
-```sh
-sudo launchctl bootstrap system /Library/LaunchDaemons/com.github.kilisk.aevand.plist
-sudo launchctl enable system/com.github.kilisk.aevand
-```
+The package does **not** register, load or start the LaunchDaemon during
+install. The first **Start daemon** in the GUI registers the bundled plist with
+ServiceManagement, and macOS asks you to approve Aevan in **System Settings >
+Login Items & Extensions**. There is no `launchctl` opt-in step and no
+administrator shell prompt.
 
 The daemon then runs as `root` and reads the root profile store
 (`/var/root/Library/Application Support/aevan`). If you want the GUI and CLI to
@@ -382,16 +390,14 @@ use those profiles, run them with `sudo` or set `AEVAN_CONFIG_DIR` to the same
 directory. This mirrors the Windows trust model, where the daemon must own the
 tunnel and the per-user store is a separate concern.
 
-To opt out again:
-
-```sh
-sudo launchctl bootout system/com.github.kilisk.aevand
-```
+To opt out again, use **Unregister daemon** in Aevan's Settings. The
+uninstaller also calls `aevan-gui --unregister-daemon` before removing files.
 
 ### macOS uninstall
 
 Run the installed uninstaller. It stops the daemon first, so routes, DNS and
-the adapter are released, then unloads the LaunchDaemon and removes files:
+the adapter are released, then removes the ServiceManagement registration and
+the files:
 
 ```sh
 sudo /usr/local/bin/aevan-uninstall
@@ -408,7 +414,8 @@ It removes:
 
 * `/Applications/Aevan.app`
 * `/usr/local/bin/aevan`, `/usr/local/bin/aevand`, `/usr/local/bin/aevan-uninstall`
-* `/Library/LaunchDaemons/com.github.kilisk.aevand.plist` and its loaded state
+* the daemon registration, plus any legacy
+  `/Library/LaunchDaemons/com.github.kilisk.aevand.plist` and its loaded state
 * `/usr/local/share/doc/aevan`
 * `/var/run/aevan.sock`, and the real control socket and journal under
   `~/Library/Application Support/aevan` (and `/var/root/...` when the
@@ -607,7 +614,7 @@ The profile store is kept.
 | Install / uninstall a package | Administrator | `sudo` | writes `Program Files` / `PATH`, or `/Applications`, `/usr/local`, `/Library`, `/etc/systemd/system` |
 | Drag `Aevan.app` from the macOS DMG | n/a | No | writes only `/Applications/Aevan.app` |
 | `aevand` creating the TUN adapter | Administrator | `sudo` / root (or `CAP_NET_ADMIN`) | `WintunCreateAdapter`, `utun`, `/dev/net/tun` and route/DNS changes are machine state |
-| Start the embedded daemon from the GUI (macOS) | n/a | One native administrator prompt | creates `utun` and changes routes/DNS as root |
+| Start the embedded daemon from the GUI (macOS) | n/a | Approve Aevan in System Settings > Login Items & Extensions | creates `utun` and changes routes/DNS as root |
 | Autostart | Administrator | `sudo` | scheduled task, LaunchDaemon or systemd unit |
 | `aevan doctor` | No | No | read-only probes; sends no credentials |
 | `aevan status`, `aevan disconnect`, `aevan logs` | No | No | local control endpoint only |

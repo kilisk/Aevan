@@ -220,6 +220,11 @@ README.md
 
 ### macOS
 
+The macOS deployment target is 13.0 (Ventura) for the binaries, the bundle,
+the icons and the packages. The raise is required by ServiceManagement's
+`SMAppService`, and it is recorded in `Info.plist` as `LSMinimumSystemVersion`
+and passed as `MACOSX_DEPLOYMENT_TARGET=13.0` to both architecture builds.
+
 `just dist-macos` builds both `aarch64-apple-darwin` and
 `x86_64-apple-darwin`, joins each binary with `lipo`, and calls
 `packaging/macos/build-pkg.sh`. The script creates the GUI
@@ -230,19 +235,23 @@ still `com.github.kilisk.aevan`), embeds `aevand` in
 Developer ID. It then:
 
 - produces `aevan-<version>-arm64+x86_64.pkg` from a component root with
-  `/usr/local/bin/{aevan,aevand,aevan-uninstall}` and
-  `/Library/LaunchDaemons/com.github.kilisk.aevand.plist` using `pkgbuild` +
-  `productbuild`;
+  `/usr/local/bin/{aevan,aevand,aevan-uninstall}` using `pkgbuild` +
+  `productbuild`; the daemon plist is not installed into
+  `/Library/LaunchDaemons`, because ServiceManagement registers it from inside
+  the app bundle;
 - builds `aevan-<version>-arm64+x86_64.dmg` from a staging folder containing
   `Aevan.app` and a symlink named `Applications` that points at `/Applications`,
   using `hdiutil create -format UDZO`;
 - leaves `target/dist/Aevan.app` for upload.
 
 The DMG is the drag-install path. The `.pkg` is still built and remains the
-CLI/system install (and the opt-in `LaunchDaemon`). The embedded `aevand` lets
-the GUI resolve a daemon beside its own executable instead of relying on
-`/usr/local/bin`; the GUI's **Start daemon (Administrator)** action runs it with
-one native `osascript` administrator prompt.
+CLI/system install. The embedded `aevand` lets the GUI resolve a daemon beside
+its own executable instead of relying on `/usr/local/bin`, and the bundle
+contains `Contents/Library/LaunchDaemons/com.github.kilisk.aevand.plist`. The
+GUI's **Start daemon** action registers that plist with ServiceManagement
+(`SMAppService.daemon(plistName:)`); macOS then asks for approval in System
+Settings > Login Items & Extensions. Nothing is installed or loaded by the
+installer, and there is no administrator shell prompt.
 
 `AppIcon.icns` is built best-effort from `assets/branding/Aevan Icon.icon` with
 `actool` when available; otherwise the script renders an `.iconset` from the
@@ -252,8 +261,9 @@ without an icon and never fails because of it.
 
 The DMG is ad-hoc signed too when `codesign` accepts it; that step is
 best-effort and a failure only warns. Nothing is notarised, so Gatekeeper still
-warns. The `LaunchDaemon` is shipped in the `.pkg` but **not loaded**; enabling
-it is an explicit `launchctl` step documented in `docs/INSTALL.md`.
+warns. The `LaunchDaemon` plist ships inside `Aevan.app` and is **not loaded**
+by the package; the first **Start daemon** registers it and asks for approval in
+System Settings > Login Items & Extensions.
 
 ### Linux
 
@@ -395,11 +405,12 @@ Be explicit about this when handing the build to someone:
   not been installed or run from the archive in this environment.
 - **The macOS universal `.app`, `.pkg` and `.dmg` are built only by CI.** They
   could not be cross-compiled on the Windows host (no Apple SDK), and this host
-  cannot run `hdiutil` or `osascript`; CI compiles, packages and mounts them on
+  cannot run `hdiutil`; CI compiles, packages and mounts them on
   `macos-latest`. The `actool`/`iconutil` icon path, the ad-hoc `codesign` step,
   `hdiutil create`, and the mount assertions can therefore only be proven in
   CI. Neither the package nor the DMG has been installed on a clean Mac, and
-  the one-prompt `osascript` daemon start has not been run on macOS hardware.
+  the ServiceManagement registration and approval flow has not been exercised
+  on macOS hardware.
 - **The `.deb` and `.rpm` are now built in CI, but they have never been
   installed by anyone.** CI is their first real build and its `dpkg-deb` /
   `rpm -qip/-qlp` checks prove package structure only. The recipes cannot be

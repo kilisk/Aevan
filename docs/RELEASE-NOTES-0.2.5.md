@@ -16,9 +16,10 @@ Two things had to change for a dragged app to actually work:
 
 - **The daemon travels inside the bundle** (`Aevan.app/Contents/MacOS/aevand`), because a copy-install
   cannot write to `/usr/local/bin`.
-- **The GUI starts it with one native admin prompt** (`osascript … with administrator privileges`) when
-  no daemon answers — the same consent a normal Mac app asks for, without a console window. Dismissing
-  the prompt leaves the window usable and says so; it never re-prompts in a loop.
+- **The GUI starts it with one native administrator-approval prompt** when no daemon answers — the
+  same consent a normal Mac app asks for, without a console window. Dismissing the prompt leaves the
+  window usable and says so; it never re-prompts in a loop. Later builds replace that prompt with
+  ServiceManagement registration and approval in System Settings.
 
 CI mounts the finished image and asserts the bundle inside it: `CFBundleIdentifier`
 `com.github.kilisk.aevan`, the icon, `aevan-gui --version`, the embedded `aevand --version`, and the

@@ -47,16 +47,15 @@ Expected: `last exit code = 0`, and `aevan.sock` owned by root with mode `srw-rw
 
 A crash report from a MacBook (SIGABRT, `abort()` on the main thread inside a CFRunLoop block, ~20 s
 after launch) plus a macOS *Choose Application* sheet is what finally named this one: the
-notification stack ran **AppleScript inside the GUI process**. `notify-rust` pulls in
-`mac-notification-sys`, which AppleScript-drives the notification centre; a string in the interpolated
-text made AppleScript look for an application that does not exist, macOS raised the chooser, and
-dismissing it aborted the process.
+notification stack ran a **script-driven backend inside the GUI process**. `notify-rust` pulls in
+`mac-notification-sys`, which drove the notification centre through that scripting layer; a string in
+the interpolated text made it look for an application that does not exist, macOS raised the chooser,
+and dismissing it aborted the process.
 
 - macOS no longer links `notify-rust`/`mac-notification-sys` at all — `cargo tree --target
-  aarch64-apple-darwin` contains neither. Notifications go through a **child** `/usr/bin/osascript`,
-  so an AppleScript error is an exit code and a log line, never a dead UI.
-- The script is built by a pure, unit-tested quoting function covering double quotes, backslashes,
-  newlines, backticks and the literal `use default`.
+  aarch64-apple-darwin` contains neither. The 0.2.8 stopgap moved delivery into a separate helper
+  process; current builds call UserNotifications directly, so a refused notification is a logged
+  error and never a dead UI.
 - Tray, notification and background callbacks are wrapped in `catch_unwind`; a panic becomes a banner.
 - A test now fails the build if production GUI code contains `unwrap`, `expect`, `panic!` or
   `unreachable!`.
