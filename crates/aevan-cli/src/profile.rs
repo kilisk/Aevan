@@ -116,6 +116,7 @@ fn add_at(
     split_tunnel: Option<SplitTunnelChoice>,
 ) -> AevanResult<ProfileDocument> {
     validate_url(name, url)?;
+    let realm = normalize_realm(realm);
     validate_realm(name, realm)?;
 
     let username = user
@@ -123,7 +124,7 @@ fn add_at(
         .filter(|user| !user.is_empty())
         .map(str::to_owned);
 
-    let mut profile = Profile::new(name, url.trim(), realm.trim())?;
+    let mut profile = Profile::new(name, url.trim(), realm)?;
     profile.username = username;
     profile.split_tunnel = split_tunnel_intent(split_tunnel);
     profile.validate()?;
@@ -188,9 +189,7 @@ fn validate_url(name: &str, raw: &str) -> AevanResult<()> {
 fn validate_realm(name: &str, realm: &str) -> AevanResult<()> {
     let realm = realm.trim();
     if realm.is_empty() {
-        return Err(AevanError::Config(format!(
-            "profile '{name}' realm must not be empty"
-        )));
+        return Ok(());
     }
     if !realm
         .chars()
@@ -201,6 +200,16 @@ fn validate_realm(name: &str, realm: &str) -> AevanResult<()> {
         )));
     }
     Ok(())
+}
+
+/// Translate the `--realm auto` spelling (and an empty value) into "detect".
+fn normalize_realm(realm: &str) -> &str {
+    let realm = realm.trim();
+    if realm.eq_ignore_ascii_case("auto") {
+        ""
+    } else {
+        realm
+    }
 }
 
 fn split_tunnel_intent(choice: Option<SplitTunnelChoice>) -> SplitTunnelIntent {
@@ -232,6 +241,14 @@ fn split_tunnel_label(intent: &SplitTunnelIntent) -> &'static str {
     }
 }
 
+fn realm_label(realm: &str) -> &str {
+    if realm.trim().is_empty() {
+        "detect automatically"
+    } else {
+        realm
+    }
+}
+
 fn print_list(report: &ListReport) {
     if report.profiles.is_empty() {
         println!("no profiles");
@@ -249,7 +266,7 @@ fn print_list(report: &ListReport) {
             "{marker} {}  {}  realm={}  split-tunnel={}",
             profile.name,
             profile.url,
-            profile.realm,
+            realm_label(&profile.realm),
             split_tunnel_label(&profile.split_tunnel)
         );
         if let Some(username) = &profile.username {
@@ -262,7 +279,7 @@ fn print_list(report: &ListReport) {
 fn print_profile(profile: &Profile) {
     println!("profile {}", profile.name);
     println!("  url: {}", profile.url);
-    println!("  realm: {}", profile.realm);
+    println!("  realm: {}", realm_label(&profile.realm));
     println!(
         "  username: {}",
         profile.username.as_deref().unwrap_or("(none)")
@@ -438,15 +455,31 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_or_auto_realm_is_stored_for_detection() {
+        let dir = TempDir::new("auto-realm");
+        let path = dir.file("profiles.toml");
+
+        let added = add_at(&path, "auto", URL, "auto", None, None).expect("add");
+        assert!(added.profile.realm.is_empty());
+
+        let store = ProfileStore::load(&path).expect("load");
+        assert!(store.get("auto").expect("profile").realm.is_empty());
+
+        let second = add_at(&path, "empty", URL, "", None, None).expect("add");
+        assert!(second.profile.realm.is_empty());
+    }
+
+    #[test]
     fn rejects_a_bad_realm() {
         let dir = TempDir::new("bad-realm");
         let path = dir.file("profiles.toml");
 
-        let empty = add_at(&path, "example", URL, "", None, None).expect_err("empty realm");
-        assert_config_error(empty, "example");
-
         let spaced =
             add_at(&path, "example", URL, "bad realm", None, None).expect_err("spaced realm");
         assert_config_error(spaced, "example");
+
+        let punctuation =
+            add_at(&path, "example", URL, "bad/realm", None, None).expect_err("invalid characters");
+        assert_config_error(punctuation, "example");
     }
 }

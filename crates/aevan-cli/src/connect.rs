@@ -8,7 +8,7 @@
 use serde::Serialize;
 use zeroize::Zeroizing;
 
-use aevan_core::{AevanError, AevanResult, Profile};
+use aevan_core::{AevanError, AevanResult, Profile, RealmSource};
 use aevan_daemon::client::{self, ClientError};
 use aevan_daemon::connector::{self, ApplyPlan, ConnectOptions, ConnectionInfo, TunnelControl};
 use aevan_daemon::{journal, Request, SecretString};
@@ -50,7 +50,8 @@ pub fn run(
 }
 
 fn run_foreground(profile_name: Option<&str>, flags: &ConnectFlags) -> AevanResult<()> {
-    let profile = common::select_profile(profile_name)?;
+    let (profile, source) = common::select_profile_with_realm(profile_name)?;
+    announce_detected_realm(&profile, source, flags.json);
     let mut session = login::authenticate_profile(&profile, flags.token_stdin)?;
 
     let control = ForegroundControl {
@@ -72,7 +73,8 @@ fn run_foreground(profile_name: Option<&str>, flags: &ConnectFlags) -> AevanResu
 }
 
 fn via_daemon(profile_name: Option<&str>, flags: &ConnectFlags) -> AevanResult<()> {
-    let profile = common::select_profile(profile_name)?;
+    let (profile, source) = common::select_profile_with_realm(profile_name)?;
+    announce_detected_realm(&profile, source, flags.json);
     let username = match profile.username.clone() {
         Some(username) => username,
         None if tty::stdin_is_terminal() => {
@@ -129,6 +131,13 @@ fn via_daemon(profile_name: Option<&str>, flags: &ConnectFlags) -> AevanResult<(
     let status = answer.response.status.unwrap_or_default();
     common::print_status(&status, flags.json, &answer.endpoint);
     Ok(())
+}
+
+/// Print the detected realm once, before the tunnel starts.
+fn announce_detected_realm(profile: &Profile, source: RealmSource, json: bool) {
+    if source.is_detected() && !json {
+        println!("realm: {} (detected)", profile.realm);
+    }
 }
 
 /// Build the version-2 connect request from the locally resolved profile.

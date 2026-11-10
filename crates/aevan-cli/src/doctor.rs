@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use serde::Serialize;
 
-use aevan_core::{AevanError, AevanResult, ProfileStore};
+use aevan_core::{AevanError, AevanResult, Profile, ProfileStore};
 use aevan_proto::{inspect_https, HttpResponse, TlsObservation, Url};
 use aevan_tun::platform;
 
@@ -23,11 +23,19 @@ struct Report {
     schema_version: u32,
     ok: bool,
     url: Option<String>,
+    realm: RealmReport,
     tls: TlsReport,
     http: HttpReport,
     tun: TunReport,
     privilege: &'static str,
     summary: String,
+}
+
+#[derive(Debug, Serialize)]
+struct RealmReport {
+    status: &'static str,
+    value: Option<String>,
+    error: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -123,10 +131,53 @@ impl HttpReport {
     }
 }
 
+impl RealmReport {
+    fn configured(value: impl Into<String>) -> Self {
+        Self {
+            status: "configured",
+            value: Some(value.into()),
+            error: None,
+        }
+    }
+
+    fn detected(value: impl Into<String>) -> Self {
+        Self {
+            status: "detected",
+            value: Some(value.into()),
+            error: None,
+        }
+    }
+
+    fn skipped(reason: &str) -> Self {
+        Self {
+            status: "skipped",
+            value: None,
+            error: Some(reason.to_owned()),
+        }
+    }
+
+    fn failed(error: impl Into<String>) -> Self {
+        Self {
+            status: "error",
+            value: None,
+            error: Some(error.into()),
+        }
+    }
+
+    fn label(&self) -> String {
+        match (self.status, self.value.as_deref()) {
+            ("configured" | "detected", Some(value)) => format!("{value} ({})", self.status),
+            (_, Some(value)) => value.to_owned(),
+            (_, None) => format!("unknown ({})", self.error.as_deref().unwrap_or("no detail")),
+        }
+    }
+}
+
 /// Run the doctor command. Returns `Ok(())` for a completed diagnosis; failures
 /// are represented by `ok: false` in the report rather than an error.
 pub fn run(url_arg: Option<&str>, profile: Option<&str>, json: bool) -> AevanResult<()> {
-    let url = resolve_url(url_arg, profile)?;
+    let (url, selected_profile) = resolve_target(url_arg, profile)?;
+    let realm = resolve_realm(selected_profile.as_ref(), url.as_ref());
     let availability = platform::probe();
     let elevation = aevan_tun::elevation();
 
@@ -161,6 +212,7 @@ pub fn run(url_arg: Option<&str>, profile: Option<&str>, json: bool) -> AevanRes
         schema_version: SCHEMA_VERSION,
         ok: network_ok,
         url: url.as_ref().map(ToString::to_string),
+        realm,
         tls,
         http,
         tun,
@@ -181,21 +233,46 @@ pub fn run(url_arg: Option<&str>, profile: Option<&str>, json: bool) -> AevanRes
     Ok(())
 }
 
-fn resolve_url(explicit: Option<&str>, profile: Option<&str>) -> AevanResult<Option<Url>> {
-    if let Some(raw) = explicit {
-        return parse_url(raw).map(Some);
-    }
-
+fn resolve_target(
+    explicit: Option<&str>,
+    profile: Option<&str>,
+) -> AevanResult<(Option<Url>, Option<Profile>)> {
     let path = ProfileStore::default_path()?;
     let store = ProfileStore::load(&path)?;
     let selected = match profile {
-        Some(name) => Some(store.get(name).ok_or_else(|| {
+        Some(name) => Some(store.get(name).cloned().ok_or_else(|| {
             AevanError::Config(format!("profile '{name}' not found in {}", path.display()))
         })?),
-        None => store.default_profile(),
+        None => store.default_profile().cloned(),
     };
 
-    selected.map(|profile| parse_url(&profile.url)).transpose()
+    let url = match explicit {
+        Some(raw) => Some(parse_url(raw)?),
+        None => selected
+            .as_ref()
+            .map(|profile| parse_url(&profile.url))
+            .transpose()?,
+    };
+    Ok((url, selected))
+}
+
+/// Report the configured realm, or detect one when the profile has none.
+///
+/// Detection is one credential-free `GET`; doctor does not persist it.
+fn resolve_realm(profile: Option<&Profile>, url: Option<&Url>) -> RealmReport {
+    if let Some(profile) = profile {
+        if profile.has_realm() {
+            return RealmReport::configured(profile.realm.clone());
+        }
+    }
+
+    match url {
+        Some(url) => match aevan_proto::detect_realm(url) {
+            Ok(realm) => RealmReport::detected(realm),
+            Err(error) => RealmReport::failed(error.to_string()),
+        },
+        None => RealmReport::skipped("no gateway URL"),
+    }
 }
 
 fn parse_url(raw: &str) -> AevanResult<Url> {
@@ -240,8 +317,11 @@ impl Report {
         };
 
         format!(
-            "{tls}; {http}; tun {} ({}); privilege {}",
-            self.tun.status, self.tun.backend, self.privilege
+            "{tls}; {http}; realm {}; tun {} ({}); privilege {}",
+            self.realm.label(),
+            self.tun.status,
+            self.tun.backend,
+            self.privilege
         )
     }
 }
@@ -249,6 +329,7 @@ impl Report {
 fn print_human(report: &Report) {
     println!("aevan doctor (schema {})", report.schema_version);
     println!("  url: {}", report.url.as_deref().unwrap_or("(none)"));
+    println!("  realm: {}", report.realm.label());
 
     match report.tls.status {
         "ok" => {
@@ -298,4 +379,27 @@ fn print_human(report: &Report) {
     );
     println!("  privilege: {}", report.privilege);
     println!("  summary: {}", report.summary);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_configured_realm_is_reported_without_a_request() {
+        let profile = Profile::new("example", "https://vpn.example.net/staff", "mygovnet_staff")
+            .expect("profile");
+
+        let realm = resolve_realm(Some(&profile), None);
+        assert_eq!(realm.status, "configured");
+        assert_eq!(realm.value.as_deref(), Some("mygovnet_staff"));
+        assert_eq!(realm.label(), "mygovnet_staff (configured)");
+    }
+
+    #[test]
+    fn no_profile_and_no_url_reports_no_realm() {
+        let realm = resolve_realm(None, None);
+        assert_eq!(realm.status, "skipped");
+        assert!(realm.value.is_none());
+    }
 }

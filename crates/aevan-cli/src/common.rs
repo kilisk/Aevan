@@ -1,8 +1,8 @@
 //! Shared CLI helpers for profile selection and error mapping.
 
-use aevan_core::{AevanError, AevanResult, Profile, ProfileStore};
+use aevan_core::{AevanError, AevanResult, Profile, ProfileStore, RealmSource};
 use aevan_daemon::StatusReport;
-use aevan_proto::{ProtoError, Url};
+use aevan_proto::{detect_realm, ProtoError, RealmError, Url};
 
 /// Version of every `--json` document in this binary.
 pub const SCHEMA_VERSION: u32 = 1;
@@ -32,6 +32,54 @@ pub fn select_profile(name: Option<&str>) -> AevanResult<Profile> {
                     .into(),
             )
         }),
+    }
+}
+
+/// Select a profile and resolve an empty realm from the gateway.
+///
+/// Detection uses one credential-free `GET` and is written back to the profile
+/// store, so later runs need no extra request. An explicit realm is returned
+/// untouched and never triggers detection.
+pub fn select_profile_with_realm(name: Option<&str>) -> AevanResult<(Profile, RealmSource)> {
+    let path = ProfileStore::default_path()?;
+    let mut store = ProfileStore::load(&path)?;
+    let profile_name = match name {
+        Some(name) if store.get(name).is_some() => name.to_owned(),
+        Some(name) => {
+            return Err(AevanError::Config(format!(
+                "profile '{name}' was not found"
+            )))
+        }
+        None => store.default.clone().ok_or_else(|| {
+            AevanError::Config(
+                "no profile is selected; add one with `aevan profile add` or pass a profile name"
+                    .into(),
+            )
+        })?,
+    };
+
+    let (realm, source) = store.ensure_realm(&profile_name, |url| {
+        let url = parse_url(url)?;
+        detect_realm(&url).map_err(realm_error)
+    })?;
+    if source.is_detected() {
+        store.save(&path)?;
+    }
+
+    let mut profile = store
+        .get(&profile_name)
+        .cloned()
+        .ok_or_else(|| AevanError::Config(format!("profile '{profile_name}' was not found")))?;
+    profile.realm = realm;
+    Ok((profile, source))
+}
+
+fn realm_error(error: RealmError) -> AevanError {
+    match error {
+        RealmError::NotAdvertised { .. } => AevanError::Config(
+            "the sign-in page did not advertise a realm; pass --realm <value>".into(),
+        ),
+        RealmError::Transport(message) => AevanError::Network(message),
     }
 }
 

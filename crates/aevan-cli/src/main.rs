@@ -157,8 +157,8 @@ enum ProfileCommand {
         /// Gateway URL.
         #[arg(long)]
         url: String,
-        /// Authentication realm.
-        #[arg(long)]
+        /// Authentication realm, or `auto` to detect it from the gateway.
+        #[arg(long, default_value = "auto")]
         realm: String,
         /// Username (never a password).
         #[arg(long)]

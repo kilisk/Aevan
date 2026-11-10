@@ -36,9 +36,8 @@ struct ConfigLive {
 
 impl ConfigLive {
     fn new(profile_name: Option<&str>) -> AevanResult<Self> {
-        Ok(Self {
-            profile: common::select_profile(profile_name)?,
-        })
+        let (profile, _) = common::select_profile_with_realm(profile_name)?;
+        Ok(Self { profile })
     }
 }
 

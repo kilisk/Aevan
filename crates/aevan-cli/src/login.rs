@@ -8,7 +8,7 @@
 use serde::Serialize;
 use zeroize::Zeroizing;
 
-use aevan_core::{AevanError, AevanResult, Profile};
+use aevan_core::{AevanError, AevanResult, Profile, RealmSource};
 pub use aevan_daemon::auth::LoginSession;
 use aevan_daemon::auth::{self, AuthCredentials};
 
@@ -22,11 +22,15 @@ struct Report {
     redirected: bool,
     ncp_config_present: bool,
     token_submitted: bool,
+    realm: String,
+    realm_source: &'static str,
 }
 
 /// Run the login command.
 pub fn run(profile_name: Option<&str>, token_stdin: bool, json: bool) -> AevanResult<()> {
-    let session = authenticate(profile_name, token_stdin)?;
+    let (profile, source) = common::select_profile_with_realm(profile_name)?;
+    let session = authenticate_profile(&profile, token_stdin)?;
+    report_detected_realm(&profile, source, json);
 
     match &session.outcome {
         aevan_nc::LoginOutcome::Success {
@@ -43,6 +47,8 @@ pub fn run(profile_name: Option<&str>, token_stdin: bool, json: bool) -> AevanRe
                 redirected: location.is_some(),
                 ncp_config_present,
                 token_submitted: session.token_submitted,
+                realm: profile.realm.clone(),
+                realm_source: realm_source_label(source),
             };
             if json {
                 let text = serde_json::to_string_pretty(&report).map_err(|error| {
@@ -73,14 +79,17 @@ pub fn run(profile_name: Option<&str>, token_stdin: bool, json: bool) -> AevanRe
     }
 }
 
-/// Select a profile and perform exactly one authentication attempt.
-///
-/// This is the shared credential path for `aevan login` and `aevan config
-/// --live`. Password and token handling happens only here. A successful
-/// result keeps the HTTP client so the caller can reuse the session cookies.
-pub fn authenticate(profile_name: Option<&str>, token_stdin: bool) -> AevanResult<LoginSession> {
-    let profile = common::select_profile(profile_name)?;
-    authenticate_profile(&profile, token_stdin)
+fn report_detected_realm(profile: &Profile, source: RealmSource, json: bool) {
+    if source.is_detected() && !json {
+        println!("realm: {} (detected)", profile.realm);
+    }
+}
+
+fn realm_source_label(source: RealmSource) -> &'static str {
+    match source {
+        RealmSource::Configured => "configured",
+        RealmSource::Detected => "detected",
+    }
 }
 
 /// Authenticate an already selected profile with exactly one attempt.
