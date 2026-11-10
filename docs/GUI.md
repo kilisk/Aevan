@@ -27,8 +27,8 @@ prompt if the control pipe is unavailable — then launches `aevan-gui` detached
 and returns. `aevan-gui` itself never starts the daemon silently.
 
 On macOS the `.pkg` installs the LaunchDaemon once and bootstraps it; a
-drag-installed app installs and bootstraps it from the **Start daemon
-(Administrator)** action. After that a reboot starts the root daemon with no
+drag-installed app installs and bootstraps it from the explicit **Start daemon
+(Administrator)** action in Settings. After that a reboot starts the root daemon with no
 prompt, and the GUI only prompts once in the app's lifetime. On relaunch the
 GUI first uses the answering system socket, then tries an unelevated
 `launchctl kickstart` of the installed job; only a missing job or a refused
@@ -191,7 +191,8 @@ notification is shown for a plain `disconnected` transition or for repeated
 * `Retry` performs one `status` probe. `Refresh` reloads `profiles.toml`.
 * When the daemon cannot be reached, the screen shows the control client's
   exact reach-failure message (not-listening, access-denied or
-  protocol-mismatch) and a **Start daemon (Administrator)** action. On Windows
+  protocol-mismatch) and a **Retry** action. Starting the daemon is the explicit
+  **Start daemon (Administrator)** action in Settings, never part of Connect. On Windows
   it performs the same one-UAC-prompt start as the `aevan` launcher. On macOS
   it checks, in order: (a) does the system socket answer — use it and do
   nothing; (b) is the LaunchDaemon installed but idle — run
@@ -213,7 +214,7 @@ notification is shown for a plain `disconnected` transition or for repeated
 
 * Username (pre-filled from the profile when present), password and one-time
   token fields.
-* When the selected profile has a decoded TOTP secret in the keyring, a live
+* When the selected profile has a decoded TOTP secret in the secret store, a live
   `code expires in Ns` countdown is shown. A code is generated fresh for the
   attempt when the token field is left empty; a typed token wins.
 * `Connect` sends one `connect` request. The button is disabled while a session
@@ -245,14 +246,15 @@ the selected profile asks for.
 * Profile, realm, gateway URL.
 * Split-tunnel preview from the profile: gateway routes only, all traffic, or
   the custom route list.
-* TOTP enrollment state (keyring present or absent).
+* TOTP enrollment state (present or absent).
 * TOTP enrolment: paste a base32 secret, validate it locally, compare the
   current code and countdown with the authenticator app, then save it to the
-  OS keyring or cancel. An enrolled profile has a Remove action.
-* Start at login: reads the same per-user `aevan` task the MSI creates and
-  offers Enable/Disable. The write goes through `aevand --install-autostart` /
-  `--remove-autostart` with one UAC prompt. If the task state cannot be read,
-  the screen says so instead of showing a guessed value.
+  owner-only secret store or cancel. An enrolled profile has a Remove action.
+* Start at login: reads the real per-user login item and offers Enable/Disable.
+  On Windows the write goes through `aevand --install-autostart` /
+  `--remove-autostart` with one UAC prompt. On macOS and Linux it writes the
+  per-user GUI login item described below with no elevation. If the state
+  cannot be read, the screen says so instead of showing a guessed value.
 * Log level (displayed and cycled in memory; the GUI does not stream logs yet).
 * Daemon endpoint (named pipe on Windows, Unix socket elsewhere).
 
@@ -303,15 +305,23 @@ application never busy-loops.
 
 ## TOTP
 
-The GUI reads a TOTP secret from the OS keyring under service `aevan` and account
-`<profile>/totp`, decodes it as RFC 4648 base32, and uses the existing
-`aevan-secrets` RFC 6238 implementation (SHA-1, six digits, 30 seconds).
+The GUI reads a TOTP secret under service `aevan` and account `<profile>/totp`,
+decodes it as RFC 4648 base32, and uses the existing `aevan-secrets` RFC 6238
+implementation (SHA-1, six digits, 30 seconds).
 
-* On Windows the real Credential Manager backend is enabled for `aevan-secrets`.
-* On macOS and Linux the keyring backend is not enabled in this build, so the
-  probe reports "not enrolled" instead of pretending a secret exists.
-* Codes are generated per attempt and never cached. A missing or malformed
-  secret is treated as "no TOTP"; it is never logged.
+The backend is chosen per platform:
+
+| Platform | Backend | Location |
+| --- | --- | --- |
+| Windows | Credential Manager (`windows-native`) | per-user Windows credential store |
+| macOS | owner-only file | `~/Library/Application Support/aevan/secrets.json` |
+| Linux | owner-only file | `$XDG_CONFIG_HOME/aevan/secrets.json`, or `~/.config/aevan/secrets.json` |
+
+The Unix file backend creates its directory with mode 0700 and writes the file
+with mode 0600. The document is a JSON object keyed by service and account; it
+never contains a profile password. Codes are generated per attempt and never
+cached. A missing or malformed secret is treated as "no TOTP"; it is never
+logged.
 
 ### Enrolment
 
@@ -322,17 +332,55 @@ Settings is the **only** place the GUI writes a secret. The flow is:
 2. **Validate** decodes it locally and shows the current six-digit code and the
    `code expires in Ns` countdown so it can be compared with the phone. Nothing
    is stored yet.
-3. **Save to keyring** writes the normalized base32 text through the existing
-   `aevan-secrets` keyring interface (service `aevan`, account
-   `<profile>/totp`). The input field and preview secret are cleared
-   immediately; the secret is never displayed again.
-4. **Remove from keyring** deletes the entry and immediately clears the
-   connect-sheet countdown source for that profile.
+3. **Save secret** writes the normalized base32 text through the
+   `aevan-secrets` backend above. The write is read back immediately: the GUI
+   decodes the stored value and generates a code at the same timestamp, and the
+   save is accepted only when that code equals the code from the enrolled
+   value. The input field and preview secret are cleared immediately; the
+   secret is never displayed again.
+4. **Remove secret** deletes the entry and immediately clears the connect-sheet
+   countdown source for that profile.
 
-The secret is never logged, never placed in argv or the environment, and never
-written to disk outside the keyring. Invalid input produces a generic error
-that does not echo the input. The connect sheet then uses the enrolled secret
-exactly as before.
+Every backend failure (permission denied, read-only directory, corrupt
+document, a missing entry after a write, or a failed round-trip) is returned to
+the view model and shown in the Settings banner. The secret is never logged,
+never placed in argv or the environment, and never echoed in an error. Invalid
+input produces a generic error that does not echo the input. The connect sheet
+then uses the enrolled secret exactly as before.
+
+## Keyboard navigation
+
+Tab moves focus forward through the current form and wraps at the end; Shift+Tab
+moves backward and wraps at the start. Enter submits that screen's primary
+action (`Connect`, `Save profile`, `Validate secret` / `Save secret`, or
+`Disconnect`). Escape closes the open sheet (connect, add profile, settings) and
+cancels the quit confirmation.
+
+The order is a plain list of field ids in `view_model` (`FocusField`), not a
+property of the widget tree, so it is tested without a display. The shell applies
+it with iced's focusable operation and gives each `text_input` the matching id.
+
+## Start at login
+
+The Settings toggle reports the real per-user login item and changes it without
+guessing.
+
+| Platform | Mechanism | Path | Contract |
+| --- | --- | --- | --- |
+| Windows | per-user Task Scheduler task | task name `Aevan` | `HighestAvailable`, one UAC prompt; the MSI creates it by default |
+| macOS | per-user LaunchAgent | `~/Library/LaunchAgents/com.github.kilisk.aevan.plist` | `ProgramArguments` runs `aevan-gui`; `RunAtLoad` true; `KeepAlive` false; no elevation |
+| Linux | XDG autostart entry | `~/.config/autostart/aevan.desktop` | `Exec=aevan-gui`; ordinary user permissions; no elevation |
+
+On macOS the agent is also loaded with a best-effort `launchctl load -w`; the
+file alone is the source of truth for the reported state, so a refused load does
+not make a successful install look disabled. Removing the file (and best-effort
+unload) disables it. The Linux entry is a standard desktop autostart file with
+`X-GNOME-Autostart-enabled=true`; a systemd user unit is not used because the
+XDG entry is the simpler equivalent and needs no service manager. Enable and
+disable are idempotent, and a missing file reports `Absent`.
+
+All three paths are tested with an injected command runner and temporary home
+directories, so the enable/disable/state cycle runs offline on every build host.
 
 ## What the GUI explicitly does not do
 
@@ -347,10 +395,10 @@ exactly as before.
   `daemon-start.log` to name a failed daemon start.
 * No tray on Linux (see above). macOS has a menu-bar item; notifications still
   use the cross-platform `notify-rust` path.
-* No password persistence; a TOTP secret is stored only in the OS keyring.
+* No password persistence; a TOTP secret is stored only in the owner-only
+  secret store (Credential Manager on Windows, a 0600 file on macOS/Linux).
 * No service installation. The Settings switch does not install a service; it
-  only creates or removes the same per-user logon task the MSI uses, through
-  `aevand --install-autostart` / `--remove-autostart` and one UAC prompt.
+  creates or removes the per-user login item described below.
 
 ## Current limitations
 
@@ -360,9 +408,9 @@ exactly as before.
   a placeholder glyph, not final art.
 * **Notification identity:** unpackaged Windows builds show toasts under the
   built-in PowerShell app identity; a packaged app identity is future work.
-* **macOS/Linux keyring:** the packages (`.pkg` and `.tar.gz`) exist, but the
-  macOS/Linux keyring backends are still not enabled in this build, so TOTP
-  enrolment reports "not enrolled" there.
+* **macOS/Linux secret backend:** TOTP uses an owner-only JSON file rather than
+  a keychain or Secret Service entry, because this build does not compile those
+  native backends. The file is 0600 in a 0700 directory.
 * **TOTP secret formats:** RFC 6238 SHA-1 / six digits / 30 seconds only, which
   matches the gateway realm; other digits or periods are not configurable.
 * **One tunnel:** like the daemon, the GUI shows one profile/tunnel at a time.
@@ -410,6 +458,16 @@ network or elevation:
   material;
 * TOTP validation accepts valid base32 with spaces/dashes/lower case, rejects
   invalid or empty input without echoing it, clears the input after save, and
-  removal clears the countdown source.
+  removal clears the countdown source;
+* Tab cycles each form in declaration order and wraps, Shift+Tab reverses and
+  wraps, and Enter maps to the right primary action per screen;
+* the GUI source guard proves that Connect and its daemon-bridge call contain no
+  process spawn, URL opener, elevation or helper-install path, and that
+  production GUI code contains no `unwrap`, `expect` or panic;
+* a TOTP save round-trips through the file backend, the stored secret generates
+  the same code, a second save replaces cleanly, a read-only directory gives a
+  typed error, and the Unix directory/file modes are 0700/0600;
+* macOS LaunchAgent and Linux XDG login items enable, disable and report their
+  state through an injected runner and temporary home directories.
 
 The full workspace suite (`cargo test --workspace`) still runs offline.
