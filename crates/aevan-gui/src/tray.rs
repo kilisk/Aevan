@@ -29,7 +29,7 @@ use crate::view_model::TrayMenuState;
 /// Linux never constructs these; the `Message` variant carries the same
 /// allowance.
 #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrayEvent {
     /// Left-click: open or focus the window.
     ShowWindow,
@@ -39,6 +39,8 @@ pub enum TrayEvent {
     Disconnect,
     /// Close the application.
     Quit,
+    /// A tray callback panicked; the message becomes a banner.
+    InternalPanic(String),
 }
 
 /// A live tray, or an empty handle when the platform declined to create one.
@@ -130,6 +132,19 @@ mod channel {
         let _ = events().send(event);
     }
 
+    /// Turn a caught tray panic into a banner message.
+    pub fn report_panic(payload: Box<dyn std::any::Any + Send>) {
+        let detail = if let Some(text) = payload.downcast_ref::<&str>() {
+            (*text).to_owned()
+        } else if let Some(text) = payload.downcast_ref::<String>() {
+            text.clone()
+        } else {
+            "an unknown panic".to_owned()
+        };
+        tracing::error!(%detail, "a tray callback panicked");
+        let _ = events().send(TrayEvent::InternalPanic(detail));
+    }
+
     pub fn subscription() -> iced::Subscription<Message> {
         iced::Subscription::run(stream)
     }
@@ -191,7 +206,12 @@ mod backend {
         }
         let _ = std::thread::Builder::new()
             .name("aevan-tray".to_owned())
-            .spawn(run);
+            .spawn(|| {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run));
+                if let Err(payload) = result {
+                    channel::report_panic(payload);
+                }
+            });
     }
 
     pub fn sync(state: &TrayMenuState) {
@@ -266,31 +286,46 @@ mod backend {
         };
 
         MenuEvent::set_event_handler(Some(|event: MenuEvent| {
-            let id = event.id().0.as_str();
-            match id {
-                CONNECT_ID => channel::send(TrayEvent::Connect),
-                DISCONNECT_ID => channel::send(TrayEvent::Disconnect),
-                SHOW_ID => channel::send(TrayEvent::ShowWindow),
-                QUIT_ID => channel::send(TrayEvent::Quit),
-                _ => {}
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let id = event.id().0.as_str();
+                match id {
+                    CONNECT_ID => channel::send(TrayEvent::Connect),
+                    DISCONNECT_ID => channel::send(TrayEvent::Disconnect),
+                    SHOW_ID => channel::send(TrayEvent::ShowWindow),
+                    QUIT_ID => channel::send(TrayEvent::Quit),
+                    _ => {}
+                }
+            }));
+            if let Err(payload) = result {
+                channel::report_panic(payload);
             }
         }));
         TrayIconEvent::set_event_handler(Some(|event: TrayIconEvent| {
-            if matches!(
-                event,
-                TrayIconEvent::Click {
-                    button: MouseButton::Left,
-                    button_state: MouseButtonState::Up,
-                    ..
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if matches!(
+                    event,
+                    TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    }
+                ) {
+                    channel::send(TrayEvent::ShowWindow);
                 }
-            ) {
-                channel::send(TrayEvent::ShowWindow);
+            }));
+            if let Err(payload) = result {
+                channel::report_panic(payload);
             }
         }));
 
         if let Ok(last) = LAST_STATE.lock() {
             if let Some(state) = last.as_ref() {
-                apply(&tray, &status, &connect, &disconnect, state);
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    apply(&tray, &status, &connect, &disconnect, state);
+                }));
+                if let Err(payload) = result {
+                    channel::report_panic(payload);
+                }
             }
         }
 
@@ -299,7 +334,12 @@ mod backend {
             match event {
                 Event::NewEvents(StartCause::Init) => {}
                 Event::UserEvent(Command::Sync(state)) => {
-                    apply(&tray, &status, &connect, &disconnect, &state);
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        apply(&tray, &status, &connect, &disconnect, &state);
+                    }));
+                    if let Err(payload) = result {
+                        channel::report_panic(payload);
+                    }
                 }
                 _ => {}
             }
@@ -376,12 +416,16 @@ mod macos {
     }
 
     pub fn start() -> Handle {
-        match build() {
-            Ok(backend) => Handle {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(build)) {
+            Ok(Ok(backend)) => Handle {
                 backend: Some(Rc::new(RefCell::new(backend))),
             },
-            Err(error) => {
+            Ok(Err(error)) => {
                 info!(%error, "cannot create the macOS menu-bar item; running window-only");
+                Handle { backend: None }
+            }
+            Err(_) => {
+                info!("the macOS menu-bar item panicked while being created; running window-only");
                 Handle { backend: None }
             }
         }
@@ -455,13 +499,18 @@ mod macos {
         let tray = builder.build()?;
 
         MenuEvent::set_event_handler(Some(|event: MenuEvent| {
-            let id = event.id().0.as_str();
-            match id {
-                CONNECT_ID => channel::send(TrayEvent::Connect),
-                DISCONNECT_ID => channel::send(TrayEvent::Disconnect),
-                SHOW_ID => channel::send(TrayEvent::ShowWindow),
-                QUIT_ID => channel::send(TrayEvent::Quit),
-                _ => {}
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let id = event.id().0.as_str();
+                match id {
+                    CONNECT_ID => channel::send(TrayEvent::Connect),
+                    DISCONNECT_ID => channel::send(TrayEvent::Disconnect),
+                    SHOW_ID => channel::send(TrayEvent::ShowWindow),
+                    QUIT_ID => channel::send(TrayEvent::Quit),
+                    _ => {}
+                }
+            }));
+            if let Err(payload) = result {
+                channel::report_panic(payload);
             }
         }));
 

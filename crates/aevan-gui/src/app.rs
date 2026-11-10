@@ -175,10 +175,32 @@ impl App {
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
-        let task = self.handle(message);
-        self.vm.flush_notifications(self.notifier.as_ref());
-        self.sync_tray();
-        task
+        // A message handler also runs notification delivery and tray sync. A
+        // panic anywhere in that path becomes a banner: the window must stay
+        // alive, and the workspace keeps `panic = "unwind"` so this can catch
+        // it instead of aborting the UI.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let task = self.handle(message);
+            self.vm.flush_notifications(self.notifier.as_ref());
+            self.sync_tray();
+            task
+        }));
+        match result {
+            Ok(task) => task,
+            Err(payload) => {
+                self.panic_banner("a message handler", payload);
+                Task::none()
+            }
+        }
+    }
+
+    /// Record a caught panic as a visible banner instead of aborting.
+    fn panic_banner(&mut self, context: &str, payload: Box<dyn std::any::Any + Send>) {
+        let detail = panic_detail(payload);
+        tracing::error!(%detail, context, "the GUI caught a panic");
+        self.vm.notice = Some(format!(
+            "Aevan recovered from an internal error in {context}: {detail}"
+        ));
     }
 
     fn handle(&mut self, message: Message) -> Task<Message> {
@@ -387,6 +409,11 @@ impl App {
                 if let Some(profile) = self.vm.begin_disconnect() {
                     return disconnect_task(Some(profile));
                 }
+            }
+            Message::Tray(TrayEvent::InternalPanic(detail)) => {
+                self.vm.notice = Some(format!(
+                    "Aevan recovered from an internal tray error: {detail}"
+                ));
             }
             Message::WindowCloseRequested(id) => {
                 self.vm.window_closed();
@@ -1371,6 +1398,17 @@ fn primary_message(vm: &ViewModel) -> Option<Message> {
     }
 }
 
+/// Readable text from a caught panic payload.
+fn panic_detail(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(text) = payload.downcast_ref::<&str>() {
+        (*text).to_owned()
+    } else if let Some(text) = payload.downcast_ref::<String>() {
+        text.clone()
+    } else {
+        "an unknown panic".to_owned()
+    }
+}
+
 fn start_daemon_task() -> Task<Message> {
     Task::perform(
         async {
@@ -1472,6 +1510,40 @@ mod tests {
             tray: tray::Handle::for_test(),
             tray_state: None,
         }
+    }
+
+    struct PanickingNotifier;
+
+    impl Notifier for PanickingNotifier {
+        fn notify(&self, _notification: &crate::view_model::TransitionNotification) {
+            panic!("the notifier exploded");
+        }
+    }
+
+    #[test]
+    fn a_panicking_callback_is_turned_into_a_banner() {
+        let mut app = app();
+        app.notifier = Box::new(PanickingNotifier);
+        app.vm.mark_failed("connection failed");
+
+        let _ = app.update(Message::Tick);
+
+        assert!(
+            app.vm
+                .notice
+                .as_deref()
+                .is_some_and(|notice| notice.contains("the notifier exploded")),
+            "{:?}",
+            app.vm.notice
+        );
+        assert!(
+            app.vm
+                .notice
+                .as_deref()
+                .is_some_and(|notice| notice.contains("recovered")),
+            "{:?}",
+            app.vm.notice
+        );
     }
 
     #[test]
