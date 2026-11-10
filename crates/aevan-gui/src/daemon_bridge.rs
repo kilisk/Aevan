@@ -11,6 +11,9 @@ use std::time::Duration;
 use aevan_core::{Profile, ProfileStore};
 use aevan_daemon::autostart::{self, TaskState};
 use aevan_daemon::client::{self, ClientError};
+#[cfg(target_os = "macos")]
+use aevan_daemon::elevate::StartOutcome;
+#[cfg(not(target_os = "macos"))]
 use aevan_daemon::elevate::{self, StartOutcome};
 use aevan_daemon::{Request, Response, StatusReport};
 
