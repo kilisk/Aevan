@@ -8,6 +8,22 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  platform-matrix:
+    name: platform-matrix
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      # Fast, toolchain-free gate: the committed matrix must match the
+      # capability inventory, and every implemented/stub/absent difference must
+      # carry a docs/platform-gaps.toml entry.
+      - name: Check the platform capability matrix
+        run: python scripts/platform-matrix.py --check
+
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

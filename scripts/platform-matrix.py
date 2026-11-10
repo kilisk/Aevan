@@ -11,6 +11,7 @@ Run with no arguments to print the table and write `docs/PLATFORM-MATRIX.md`.
 
 from __future__ import annotations
 
+import argparse
 import re
 import sys
 from dataclasses import dataclass
@@ -19,6 +20,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 CAPABILITIES_RS = ROOT / "crates" / "aevan-core" / "src" / "capabilities.rs"
 EVIDENCE_TOML = ROOT / "docs" / "platform-evidence.toml"
+GAPS_TOML = ROOT / "docs" / "platform-gaps.toml"
 MATRIX_DOC = ROOT / "docs" / "PLATFORM-MATRIX.md"
 
 PLATFORMS = ("windows", "macos", "linux")
@@ -108,6 +110,14 @@ class Evidence:
     platform: str
     state: str
     source: str
+
+
+@dataclass(frozen=True)
+class Gap:
+    capability: str
+    platform: str
+    reason: str
+    note: str
 
 
 def fail(message: str) -> None:
@@ -424,6 +434,92 @@ def parse_evidence(capabilities: list[Capability]) -> dict[tuple[str, str], Evid
     return entries
 
 
+def parse_gaps(capabilities: list[Capability]) -> dict[tuple[str, str], Gap]:
+    if not GAPS_TOML.exists():
+        return {}
+    try:
+        import tomllib
+    except ImportError:
+        fail("Python 3.11 or newer is required (tomllib)")
+    try:
+        document = tomllib.loads(read_text(GAPS_TOML))
+    except tomllib.TOMLDecodeError as error:
+        fail(f"invalid docs/platform-gaps.toml: {error}")
+
+    known = {capability.id for capability in capabilities}
+    entries: dict[tuple[str, str], Gap] = {}
+    for raw in document.get("gap", []):
+        for field in ("capability", "platform", "reason"):
+            if field not in raw:
+                fail(f"gap entry is missing {field!r}: {raw!r}")
+        capability = str(raw["capability"])
+        platform = str(raw["platform"])
+        reason = str(raw["reason"]).strip()
+        owner_note = str(raw.get("owner_note", "")).strip()
+        tracking_note = str(raw.get("tracking_note", "")).strip()
+        if capability not in known:
+            fail(f"gap names unknown capability {capability!r}")
+        if platform not in PLATFORMS:
+            fail(f"gap names unknown platform {platform!r}")
+        if not reason:
+            fail(f"gap for {capability}/{platform} has an empty reason")
+        if not owner_note and not tracking_note:
+            fail(
+                f"gap for {capability}/{platform} needs an owner_note or a tracking_note"
+            )
+        key = (capability, platform)
+        if key in entries:
+            fail(f"duplicate gap for {capability}/{platform}")
+        entries[key] = Gap(
+            capability,
+            platform,
+            reason,
+            owner_note or tracking_note,
+        )
+    return entries
+
+
+def check_required_gaps(
+    capabilities: list[Capability], gaps: dict[tuple[str, str], Gap]
+) -> list[str]:
+    problems: list[str] = []
+    for capability in capabilities:
+        states = {
+            platform: classify_cell(capability, platform) for platform in PLATFORMS
+        }
+        if "implemented" not in states.values():
+            continue
+        for platform, state in states.items():
+            if state in ("stub", "absent") and (capability.id, platform) not in gaps:
+                implemented_on = ", ".join(
+                    candidate
+                    for candidate, candidate_state in states.items()
+                    if candidate_state == "implemented"
+                )
+                problems.append(
+                    f"capability {capability.id!r} is {state} on {platform} "
+                    f"while it is implemented on {implemented_on}; add an entry to "
+                    f"docs/platform-gaps.toml with capability = {capability.id!r}, "
+                    f"platform = {platform!r}, a reason, and an owner_note or "
+                    "tracking_note"
+                )
+    return problems
+
+
+def check_document(document: str) -> list[str]:
+    if not MATRIX_DOC.exists():
+        return [
+            "docs/PLATFORM-MATRIX.md is missing; run `python scripts/platform-matrix.py`"
+        ]
+    committed = MATRIX_DOC.read_text(encoding="utf-8")
+    if committed != document:
+        return [
+            "docs/PLATFORM-MATRIX.md is stale; run "
+            "`python scripts/platform-matrix.py` and commit the result"
+        ]
+    return []
+
+
 def escape_markdown(value: str) -> str:
     return value.replace("|", "\\|").replace("\n", " ")
 
@@ -479,9 +575,31 @@ def render_matrix(
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="fail if the committed matrix is stale or a required gap is missing",
+    )
+    arguments = parser.parse_args()
+
     capabilities = parse_capabilities()
     evidence = parse_evidence(capabilities)
+    gaps = parse_gaps(capabilities)
     document = render_matrix(capabilities, evidence)
+
+    if arguments.check:
+        problems = check_document(document) + check_required_gaps(capabilities, gaps)
+        if problems:
+            for problem in problems:
+                print(f"platform-matrix: {problem}", file=sys.stderr)
+            return 1
+        print(
+            "platform matrix is up to date and every implemented/stub/absent "
+            "difference has a gap entry"
+        )
+        return 0
+
     print(document)
     MATRIX_DOC.write_text(document, encoding="utf-8", newline="\n")
     print(f"wrote {MATRIX_DOC.relative_to(ROOT)}", file=sys.stderr)
