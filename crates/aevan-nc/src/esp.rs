@@ -1234,9 +1234,12 @@ impl EspSession {
         self.bytes_received
     }
 
-    /// One non-blocking step: drain every queued datagram, send a keepalive
-    /// when due, then drain every queued device packet. Each direction is
+    /// One non-blocking step: drain every queued device packet, send a
+    /// keepalive when due, then drain every queued datagram. Each direction is
     /// capped at [`ESP_BATCH_MAX`]. Returns whether anything happened.
+    ///
+    /// The device drain runs first so a stalled or erroring UDP read can never
+    /// leave packets queued in the tunnel device.
     pub fn poll_once<U: EspUdp, D: EspDevice>(
         &mut self,
         udp: &mut U,
@@ -1265,9 +1268,37 @@ impl EspSession {
             self.next_kmp_poll = now + KMP_POLL_INTERVAL;
         }
 
-        // Drain every datagram already queued before touching the device. A
-        // non-blocking socket reports `WouldBlock` when empty, so this never
-        // waits for the next datagram.
+        // Drain every queued device packet, up to the batch cap, before the
+        // UDP batch. A stalled or erroring socket read must never prevent the
+        // tunnel device from being drained.
+        let mut sent = 0usize;
+        loop {
+            let mut buffer = std::mem::take(&mut self.device_buffer);
+            let result = device.recv(&mut buffer);
+            match result {
+                Ok(None) | Ok(Some(0)) => {
+                    self.device_buffer = buffer;
+                    break;
+                }
+                Ok(Some(length)) => {
+                    let outcome = self.send_device_packet(&buffer[..length], udp);
+                    self.device_buffer = buffer;
+                    outcome?;
+                    worked = true;
+                    sent += 1;
+                    if sent >= ESP_BATCH_MAX {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    self.device_buffer = buffer;
+                    return Err(EspSessionError::Device(error.to_string()));
+                }
+            }
+        }
+
+        // Drain every datagram already queued. A non-blocking socket reports
+        // `WouldBlock` when empty, so this never waits for the next datagram.
         let mut received = 0usize;
         loop {
             let mut buffer = std::mem::take(&mut self.udp_buffer);
@@ -1322,33 +1353,6 @@ impl EspSession {
             }
             self.keepalive.record_sent(elapsed_seconds);
             worked = true;
-        }
-
-        // Drain every queued device packet, up to the batch cap.
-        let mut sent = 0usize;
-        loop {
-            let mut buffer = std::mem::take(&mut self.device_buffer);
-            let result = device.recv(&mut buffer);
-            match result {
-                Ok(None) | Ok(Some(0)) => {
-                    self.device_buffer = buffer;
-                    break;
-                }
-                Ok(Some(length)) => {
-                    let outcome = self.send_device_packet(&buffer[..length], udp);
-                    self.device_buffer = buffer;
-                    outcome?;
-                    worked = true;
-                    sent += 1;
-                    if sent >= ESP_BATCH_MAX {
-                        break;
-                    }
-                }
-                Err(error) => {
-                    self.device_buffer = buffer;
-                    return Err(EspSessionError::Device(error.to_string()));
-                }
-            }
         }
 
         Ok(worked)
@@ -3718,14 +3722,17 @@ mod tests {
             .poll_once(&mut udp, &mut device, now)
             .expect("outbound"));
         assert_eq!(udp.sent.len(), 1);
-        assert!(device.inbound.is_empty());
-
-        assert!(session
-            .poll_once(&mut udp, &mut device, now + Duration::from_millis(1))
-            .expect("inbound"));
-        assert_eq!(device.inbound, vec![packet]);
+        assert_eq!(
+            device.inbound,
+            vec![packet],
+            "the device drain runs before the UDP batch, so the echo is delivered in the same poll"
+        );
         assert_eq!(session.bytes_sent(), udp.sent[0].len() as u64);
         assert!(session.bytes_received() > 0);
+
+        assert!(!session
+            .poll_once(&mut udp, &mut device, now + Duration::from_millis(1))
+            .expect("idle poll"));
     }
 
     #[test]
