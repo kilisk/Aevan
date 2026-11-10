@@ -52,6 +52,7 @@ pub enum Message {
     ShowSettings,
     SettingsForProfile(String),
     BeginAddProfile,
+    BeginEditProfile(String),
     AddProfileName(String),
     AddProfileUrl(String),
     AddProfileRealm(String),
@@ -315,6 +316,7 @@ impl App {
                 }
             }
             Message::BeginAddProfile => self.vm.begin_add_profile(),
+            Message::BeginEditProfile(name) => self.vm.begin_edit_profile(&name),
             Message::AddProfileName(value) => self.vm.set_add_profile_name(value),
             Message::AddProfileUrl(value) => self.vm.set_add_profile_url(value),
             Message::AddProfileRealm(value) => self.vm.set_add_profile_realm(value),
@@ -325,11 +327,9 @@ impl App {
                     .and_then(|path| ProfileStore::load(&path).map(|store| (path, store)));
                 match loaded {
                     Ok((path, mut store)) => {
-                        if self.vm.save_added_profile(&mut store, now_unix()).is_ok() {
+                        if self.vm.save_profile_draft(&mut store, now_unix()).is_ok() {
                             if let Err(error) = store.save(&path) {
-                                self.vm.notice = Some(format!(
-                                    "the profile was added but could not be saved: {error}"
-                                ));
+                                self.vm.apply_profile_store_error("save", error);
                             }
                         }
                     }
@@ -659,8 +659,14 @@ impl App {
             .spacing(3)
             .width(Length::Fill);
 
+            let management = row![button(text("Edit").size(14))
+                .on_press(Message::BeginEditProfile(profile.name.clone()))
+                .style(button::secondary)
+                .padding([6, 14])]
+            .spacing(8);
+
             let actions = if connected {
-                row![text("connected").size(13).color(SUCCESS)]
+                row![text("connected").size(13).color(SUCCESS), management].spacing(8)
             } else if self.vm.can_connect() {
                 row![
                     button(text("Connect").size(14))
@@ -670,12 +676,17 @@ impl App {
                         .on_press(Message::SettingsForProfile(profile.name.clone()))
                         .style(button::secondary)
                         .padding([6, 14]),
+                    management,
                 ]
                 .spacing(8)
             } else {
-                row![text(state_label(&self.vm.state))
-                    .size(13)
-                    .color(state_color(&self.vm.state))]
+                row![
+                    text(state_label(&self.vm.state))
+                        .size(13)
+                        .color(state_color(&self.vm.state)),
+                    management,
+                ]
+                .spacing(8)
             };
 
             let entry = row![
@@ -802,8 +813,13 @@ impl App {
     }
 
     fn add_profile_view(&self) -> Element<'_, Message> {
+        let title = if self.vm.editing_profile().is_some() {
+            "Edit profile"
+        } else {
+            "Add profile"
+        };
         let mut form = column![
-            text("Add profile").size(22),
+            text(title).size(22),
             text(
                 "Profiles hold no password or token. Aevan asks for credentials only when you connect, and secrets live in the owner-only secret store."
             )
@@ -812,6 +828,16 @@ impl App {
         ]
         .spacing(12)
         .width(Length::Fill);
+
+        if self.vm.editing_connected_profile() {
+            form = form.push(
+                text(
+                    "This profile is connected. Changes apply to the next connection; the live tunnel is not touched."
+                )
+                .size(12)
+                .color(WARNING),
+            );
+        }
 
         form = form.push(text("Name").size(12).color(MUTED)).push(
             text_input("profile name", &self.vm.add_profile.name)
