@@ -13,6 +13,7 @@ categories = ["command-line-utilities", "network-programming"]
 
 [workspace.dependencies]
 aes = "0.8"
+block2 = "=0.6.2"
 cbc = "0.1"
 cipher = "0.4"
 clap = { version = "4.5", features = ["derive"] }
@@ -29,6 +30,10 @@ aevan-tun = { path = "crates/aevan-tun" }
 keyring = { version = "3", default-features = false }
 libc = "0.2"
 notify-rust = "4.18"
+objc2 = "=0.6.5"
+objc2-foundation = { version = "=0.3.2", default-features = false }
+objc2-service-management = "=0.3.2"
+objc2-user-notifications = "=0.3.2"
 png = "0.18"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 serde = { version = "1", features = ["derive"] }

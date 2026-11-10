@@ -31,11 +31,22 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 zeroize = { workspace = true }
 
-# Windows and Linux use the cross-platform notification backend. macOS
-# deliberately does not link `notify-rust`/`mac-notification-sys`: that stack
-# runs AppleScript in-process, so the GUI uses a child `osascript` instead.
+# Windows and Linux use the cross-platform notification backend. macOS uses
+# the native UserNotifications framework instead.
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 notify-rust = { workspace = true }
+
+# macOS notifications and LaunchDaemon registration are direct framework calls:
+# UserNotifications for UNUserNotificationCenter and ServiceManagement for
+# SMAppService. These crates expose the Objective-C bindings; the GUI's
+# `#![deny(unsafe_code)]` stays in force everywhere except the two modules that
+# opt in locally.
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = { workspace = true }
+objc2 = { workspace = true }
+objc2-foundation = { workspace = true, default-features = false, features = ["std", "NSString", "NSError"] }
+objc2-service-management = { workspace = true }
+objc2-user-notifications = { workspace = true }
 
 # Windows: `tao` pumps the hidden tray window's Win32 messages on the tray
 # thread; `tray-icon` provides the icon and menu. Linux stays tray-free (no GTK

@@ -104,6 +104,8 @@ pub enum Message {
     AutostartStatusLoaded(Result<aevan_daemon::autostart::TaskState, String>),
     SetAutostart,
     AutostartChanged(Result<aevan_daemon::autostart::TaskState, String>),
+    #[cfg(target_os = "macos")]
+    NotificationAuthorization(crate::notifications::Authorization),
 }
 
 /// The iced application state.
@@ -140,6 +142,19 @@ impl App {
         let mut tasks = vec![poll_status_task(), autostart_status_task()];
         if let Some(profile) = vm.selected.clone() {
             tasks.push(load_totp_task(profile));
+        }
+        #[cfg(target_os = "macos")]
+        {
+            // Ask once, on a worker thread, so a prompt never blocks the
+            // window thread. The result becomes a banner only when denied.
+            tasks.push(Task::perform(
+                async {
+                    tokio::task::spawn_blocking(crate::notifications::request_authorization)
+                        .await
+                        .unwrap_or(crate::notifications::Authorization::Unknown)
+                },
+                Message::NotificationAuthorization,
+            ));
         }
         let mut app = Self {
             vm,
@@ -453,6 +468,15 @@ impl App {
                 }
             }
             Message::AutostartChanged(result) => self.vm.apply_autostart_change(result),
+            #[cfg(target_os = "macos")]
+            Message::NotificationAuthorization(authorization) => {
+                if authorization == crate::notifications::Authorization::Denied {
+                    self.vm.notice = Some(
+                        "notifications are disabled in System Settings; Aevan will keep showing state in the window and menu bar."
+                            .to_owned(),
+                    );
+                }
+            }
         }
         Task::none()
     }
@@ -1723,6 +1747,7 @@ mod tests {
         for source in [
             include_str!("app.rs"),
             include_str!("daemon_bridge.rs"),
+            include_str!("notifications.rs"),
             include_str!("view_model.rs"),
             include_str!("relaunch.rs"),
             include_str!("start_log.rs"),
