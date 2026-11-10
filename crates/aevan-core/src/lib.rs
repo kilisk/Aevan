@@ -20,6 +20,6 @@ pub mod timezone;
 pub use capabilities::{Capability, Platform, CAPABILITIES};
 pub use error::{exit_code, AevanError, AevanResult};
 pub use paths::{default_config_path, default_profiles_path};
-pub use profile::{Profile, ProfileStore, SplitTunnelIntent};
+pub use profile::{Profile, ProfileStore, RealmSource, SplitTunnelIntent};
 pub use state::State;
 pub use timezone::local_utc_offset_minutes;

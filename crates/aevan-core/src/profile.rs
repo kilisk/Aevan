@@ -42,6 +42,11 @@ pub struct Profile {
     /// Gateway URL, for example `https://vpn.example.net/example_realm`.
     pub url: String,
     /// Authentication realm required by the gateway.
+    ///
+    /// An empty value means "detect it from the gateway on first use". The
+    /// gateway advertises the realm on its sign-in page, so the field is
+    /// optional.
+    #[serde(default)]
     pub realm: String,
     /// Optional username. Never a password.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -91,9 +96,9 @@ impl Profile {
                 self.name
             )));
         }
-        if self.realm.trim().is_empty() {
+        if self.realm.contains(char::is_whitespace) {
             return Err(AevanError::Config(format!(
-                "profile '{}' realm must not be empty",
+                "profile '{}' realm must not contain whitespace",
                 self.name
             )));
         }
@@ -111,6 +116,28 @@ impl Profile {
     /// Path-like identifier used for keyring entries and logs.
     pub fn key(&self) -> &str {
         &self.name
+    }
+
+    /// Whether the profile carries a realm instead of asking for detection.
+    pub fn has_realm(&self) -> bool {
+        !self.realm.trim().is_empty()
+    }
+}
+
+/// Where a profile's realm came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RealmSource {
+    /// The profile already carried the realm.
+    Configured,
+    /// The realm was read from the gateway on first use.
+    Detected,
+}
+
+impl RealmSource {
+    /// Whether this run performed detection.
+    pub fn is_detected(self) -> bool {
+        matches!(self, Self::Detected)
     }
 }
 
@@ -192,6 +219,39 @@ impl ProfileStore {
     /// Look up a profile by name.
     pub fn get(&self, name: &str) -> Option<&Profile> {
         self.profiles.get(name)
+    }
+
+    /// Resolve the realm for `name`, detecting it when the profile has none.
+    ///
+    /// The returned [`RealmSource`] says whether detection ran. The store is
+    /// updated in memory when it did; the caller saves the store to persist the
+    /// value for later runs. An explicit realm is never passed to `detect`.
+    pub fn ensure_realm<F>(&mut self, name: &str, detect: F) -> AevanResult<(String, RealmSource)>
+    where
+        F: FnOnce(&str) -> AevanResult<String>,
+    {
+        let profile = self
+            .profiles
+            .get(name)
+            .cloned()
+            .ok_or_else(|| AevanError::Config(format!("profile '{name}' was not found")))?;
+
+        if profile.has_realm() {
+            return Ok((profile.realm, RealmSource::Configured));
+        }
+
+        let realm = detect(&profile.url)?.trim().to_owned();
+        if realm.is_empty() {
+            return Err(AevanError::Config(
+                "the sign-in page did not advertise a realm; pass --realm <value>".into(),
+            ));
+        }
+
+        let mut detected = profile;
+        detected.realm = realm.clone();
+        detected.validate()?;
+        self.profiles.insert(name.to_owned(), detected);
+        Ok((realm, RealmSource::Detected))
     }
 
     /// Remove a profile. Clears the default if it named the removed profile.
@@ -379,11 +439,107 @@ mod tests {
         assert!(Profile::new("", "https://example.net/", "realm").is_err());
         assert!(Profile::new("has space", "https://example.net/", "realm").is_err());
         assert!(Profile::new("name", "http://example.net/", "realm").is_err());
-        assert!(Profile::new("name", "https://example.net/", "").is_err());
+        assert!(Profile::new("name", "https://example.net/", "bad realm").is_err());
 
         let mut profile = sample();
         profile.split_tunnel = SplitTunnelIntent::Custom(vec![" ".into()]);
         assert!(profile.validate().is_err());
+    }
+
+    #[test]
+    fn an_empty_realm_is_valid_and_round_trips() {
+        let dir = TempDir::new("empty-realm");
+        let path = dir.file("profiles.toml");
+
+        let mut store = ProfileStore::default();
+        let profile = Profile::new("auto", "https://vpn.example.net/staff", "").expect("profile");
+        store.add(profile).expect("add");
+        store.save(&path).expect("save");
+
+        let text = fs::read_to_string(&path).expect("read");
+        assert!(text.contains("realm = \"\""), "{text}");
+
+        let loaded = ProfileStore::load(&path).expect("load");
+        let loaded = loaded.get("auto").expect("profile");
+        assert!(loaded.realm.is_empty());
+        assert!(!loaded.has_realm());
+    }
+
+    #[test]
+    fn a_missing_realm_deserialises_as_detect() {
+        let text = r#"
+            [profiles.auto]
+            name = "auto"
+            url = "https://vpn.example.net/staff"
+        "#;
+        let store: ProfileStore = toml::from_str(text).expect("store");
+        let profile = store.get("auto").expect("profile");
+        assert!(profile.realm.is_empty());
+        assert!(!profile.has_realm());
+    }
+
+    #[test]
+    fn detection_runs_once_and_is_persisted() {
+        use std::cell::Cell;
+
+        let dir = TempDir::new("detect-once");
+        let path = dir.file("profiles.toml");
+
+        let mut store = ProfileStore::default();
+        store
+            .add(Profile::new("auto", "https://vpn.example.net/staff", "").expect("profile"))
+            .expect("add");
+
+        let calls = Cell::new(0);
+        let (realm, source) = store
+            .ensure_realm("auto", |url| {
+                calls.set(calls.get() + 1);
+                assert_eq!(url, "https://vpn.example.net/staff");
+                Ok("mygovnet_staff".into())
+            })
+            .expect("detect");
+        assert_eq!(realm, "mygovnet_staff");
+        assert_eq!(source, RealmSource::Detected);
+        assert_eq!(calls.get(), 1);
+        assert_eq!(store.get("auto").expect("profile").realm, "mygovnet_staff");
+
+        store.save(&path).expect("save");
+
+        let mut reloaded = ProfileStore::load(&path).expect("load");
+        let (realm, source) = reloaded
+            .ensure_realm("auto", |_| {
+                panic!("a stored realm must not be detected again")
+            })
+            .expect("configured");
+        assert_eq!(realm, "mygovnet_staff");
+        assert_eq!(source, RealmSource::Configured);
+    }
+
+    #[test]
+    fn an_explicit_realm_is_never_replaced_by_detection() {
+        let mut store = ProfileStore::default();
+        store.add(sample()).expect("add");
+
+        let (realm, source) = store
+            .ensure_realm("example", |_| {
+                panic!("an explicit realm must not trigger detection")
+            })
+            .expect("configured");
+        assert_eq!(realm, "example_realm");
+        assert_eq!(source, RealmSource::Configured);
+        assert_eq!(
+            store.get("example").expect("profile").realm,
+            "example_realm"
+        );
+    }
+
+    #[test]
+    fn ensure_realm_reports_a_missing_profile() {
+        let mut store = ProfileStore::default();
+        let error = store
+            .ensure_realm("ghost", |_| Ok("realm".into()))
+            .expect_err("missing profile");
+        assert!(matches!(error, AevanError::Config(_)));
     }
 
     #[cfg(unix)]
