@@ -58,6 +58,83 @@ impl Screen {
     }
 }
 
+/// One focusable form field. The declaration order of each screen's list is the
+/// Tab order, and the list lives here rather than in the widget tree so it can
+/// be unit-tested without a display.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocusField {
+    /// Connect sheet: username.
+    ConnectUsername,
+    /// Connect sheet: password.
+    ConnectPassword,
+    /// Connect sheet: one-time token.
+    ConnectToken,
+    /// Add-profile sheet: name.
+    AddProfileName,
+    /// Add-profile sheet: gateway URL.
+    AddProfileUrl,
+    /// Add-profile sheet: realm.
+    AddProfileRealm,
+    /// Add-profile sheet: username.
+    AddProfileUsername,
+    /// Settings/TOTP enrolment: base32 secret.
+    SettingsTotp,
+}
+
+impl FocusField {
+    /// Stable widget id used by `iced`'s focusable operation.
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::ConnectUsername => "connect-username",
+            Self::ConnectPassword => "connect-password",
+            Self::ConnectToken => "connect-token",
+            Self::AddProfileName => "add-profile-name",
+            Self::AddProfileUrl => "add-profile-url",
+            Self::AddProfileRealm => "add-profile-realm",
+            Self::AddProfileUsername => "add-profile-username",
+            Self::SettingsTotp => "settings-totp",
+        }
+    }
+}
+
+const CONNECT_FOCUS: &[FocusField] = &[
+    FocusField::ConnectUsername,
+    FocusField::ConnectPassword,
+    FocusField::ConnectToken,
+];
+const ADD_PROFILE_FOCUS: &[FocusField] = &[
+    FocusField::AddProfileName,
+    FocusField::AddProfileUrl,
+    FocusField::AddProfileRealm,
+    FocusField::AddProfileUsername,
+];
+const SETTINGS_FOCUS: &[FocusField] = &[FocusField::SettingsTotp];
+
+/// Tab order for a screen. An empty list means the screen has no form field.
+pub fn focus_fields(screen: Screen) -> &'static [FocusField] {
+    match screen {
+        Screen::Connect => CONNECT_FOCUS,
+        Screen::AddProfile => ADD_PROFILE_FOCUS,
+        Screen::Settings => SETTINGS_FOCUS,
+        Screen::Profiles | Screen::Connected => &[],
+    }
+}
+
+/// The action Enter submits on the current screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrimaryAction {
+    /// Connect the selected profile.
+    Connect,
+    /// Save the add-profile draft.
+    SaveProfile,
+    /// Validate the typed TOTP secret.
+    TotpValidate,
+    /// Save the validated TOTP secret.
+    TotpSave,
+    /// Disconnect the live tunnel.
+    Disconnect,
+}
+
 /// Connection state, mirroring the daemon's state machine plus one local state
 /// for "the control endpoint could not be reached".
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -707,6 +784,8 @@ pub struct ViewModel {
     pub quit_after_disconnect: bool,
     /// State to restore if a Quit-initiated disconnect fails and is cancelled.
     quit_return_state: Option<ConnectionState>,
+    /// Field that currently has keyboard focus, when any.
+    focus: Option<FocusField>,
 }
 
 impl ViewModel {
@@ -768,6 +847,7 @@ impl ViewModel {
             quit_confirmation: None,
             quit_after_disconnect: false,
             quit_return_state: None,
+            focus: None,
         }
     }
 
@@ -798,6 +878,75 @@ impl ViewModel {
         *self = refreshed;
     }
 
+    /// Change screens and discard a focused field from the previous screen.
+    pub fn set_screen(&mut self, screen: Screen) {
+        if self.screen != screen {
+            self.focus = None;
+        }
+        self.screen = screen;
+    }
+
+    /// The field that currently has focus, if any.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn focused(&self) -> Option<FocusField> {
+        self.focus
+    }
+
+    /// Move focus forward in declaration order, wrapping at the end.
+    ///
+    /// The returned id is what the shell focuses with `iced`'s focusable
+    /// operation. `None` means the screen has no form field.
+    pub fn focus_next(&mut self) -> Option<FocusField> {
+        self.move_focus(true)
+    }
+
+    /// Move focus backward in declaration order, wrapping at the start.
+    pub fn focus_previous(&mut self) -> Option<FocusField> {
+        self.move_focus(false)
+    }
+
+    fn move_focus(&mut self, forward: bool) -> Option<FocusField> {
+        let fields = focus_fields(self.screen);
+        if fields.is_empty() {
+            self.focus = None;
+            return None;
+        }
+        let current = self
+            .focus
+            .and_then(|field| fields.iter().position(|candidate| *candidate == field));
+        let next = match (current, forward) {
+            (Some(index), true) => (index + 1) % fields.len(),
+            (Some(index), false) => (index + fields.len() - 1) % fields.len(),
+            (None, true) => 0,
+            (None, false) => fields.len() - 1,
+        };
+        self.focus = Some(fields[next]);
+        self.focus
+    }
+
+    /// The action Enter should submit on the current screen.
+    pub fn primary_action(&self) -> Option<PrimaryAction> {
+        match self.screen {
+            Screen::Connect => Some(PrimaryAction::Connect),
+            Screen::AddProfile => Some(PrimaryAction::SaveProfile),
+            Screen::Connected if self.can_disconnect() => Some(PrimaryAction::Disconnect),
+            Screen::Settings => {
+                if self.has_pending_totp() {
+                    Some(PrimaryAction::TotpSave)
+                } else if self
+                    .selected_profile()
+                    .is_some_and(|profile| !profile.totp_enrolled)
+                    && !self.totp_input.is_empty()
+                {
+                    Some(PrimaryAction::TotpValidate)
+                } else {
+                    None
+                }
+            }
+            Screen::Profiles | Screen::Connected => None,
+        }
+    }
+
     /// Select a profile and open the connect sheet.
     pub fn select_profile(&mut self, name: &str, now_unix: u64) {
         if !self.profiles.iter().any(|row| row.name == name) {
@@ -817,7 +966,7 @@ impl ViewModel {
         self.clear_totp_entry();
         self.notice = None;
         self.now_unix = now_unix;
-        self.screen = Screen::Connect;
+        self.set_screen(Screen::Connect);
     }
 
     /// Select a profile and open the settings screen.
@@ -831,7 +980,7 @@ impl ViewModel {
         self.totp_secret = None;
         self.notice = None;
         self.now_unix = now_unix;
-        self.screen = Screen::Settings;
+        self.set_screen(Screen::Settings);
     }
 
     /// Open the "Add profile" sheet with an empty draft.
@@ -840,7 +989,7 @@ impl ViewModel {
         self.add_profile_errors = ProfileDraftErrors::default();
         self.add_profile_error = None;
         self.notice = None;
-        self.screen = Screen::AddProfile;
+        self.set_screen(Screen::AddProfile);
     }
 
     /// Close the "Add profile" sheet without saving.
@@ -849,7 +998,7 @@ impl ViewModel {
         self.add_profile_errors = ProfileDraftErrors::default();
         self.add_profile_error = None;
         if self.screen == Screen::AddProfile {
-            self.screen = Screen::Profiles;
+            self.set_screen(Screen::Profiles);
         }
     }
 
@@ -962,7 +1111,7 @@ impl ViewModel {
         self.add_profile_errors = ProfileDraftErrors::default();
         self.add_profile_error = None;
         self.notice = Some(format!("Profile '{name}' added."));
-        self.screen = Screen::Profiles;
+        self.set_screen(Screen::Profiles);
     }
 
     fn existing_profile_names(&self) -> impl Iterator<Item = &str> {
@@ -1166,7 +1315,7 @@ impl ViewModel {
                 self.notice = None;
                 if let Some(previous) = self.quit_return_state.take() {
                     if previous == ConnectionState::Connected {
-                        self.screen = Screen::Connected;
+                        self.set_screen(Screen::Connected);
                     }
                     self.state = previous;
                 }
@@ -1191,7 +1340,7 @@ impl ViewModel {
         self.quit_after_disconnect = false;
         if let Some(previous) = self.quit_return_state.take() {
             if previous == ConnectionState::Connected {
-                self.screen = Screen::Connected;
+                self.set_screen(Screen::Connected);
             }
             self.state = previous;
         }
@@ -1372,7 +1521,7 @@ impl ViewModel {
 
         self.notice = None;
         self.state = ConnectionState::Authenticating;
-        self.screen = Screen::Connect;
+        self.set_screen(Screen::Connect);
 
         Ok(ConnectCredentials {
             profile,
@@ -1417,17 +1566,17 @@ impl ViewModel {
         self.status = Some(report);
 
         match self.state {
-            ConnectionState::Connected => self.screen = Screen::Connected,
+            ConnectionState::Connected => self.set_screen(Screen::Connected),
             ConnectionState::Disconnected | ConnectionState::Failed { .. } => {
                 self.clear_secrets();
                 if self.screen == Screen::Connected {
-                    self.screen = Screen::Profiles;
+                    self.set_screen(Screen::Profiles);
                 }
             }
             ConnectionState::RecoveryIncomplete { .. } => {
                 self.clear_secrets();
                 if self.screen == Screen::Connected {
-                    self.screen = Screen::Profiles;
+                    self.set_screen(Screen::Profiles);
                 }
             }
             _ => {}
@@ -1463,7 +1612,7 @@ impl ViewModel {
         self.status = None;
         self.clear_secrets();
         if self.screen == Screen::Connected {
-            self.screen = Screen::Profiles;
+            self.set_screen(Screen::Profiles);
         }
     }
 
@@ -1475,7 +1624,7 @@ impl ViewModel {
         self.status = None;
         self.clear_secrets();
         if self.screen == Screen::Connected {
-            self.screen = Screen::Profiles;
+            self.set_screen(Screen::Profiles);
         }
     }
 
@@ -2586,5 +2735,99 @@ mod tests {
         assert_eq!(vm.screen, Screen::Profiles);
         assert_eq!(vm.profiles.len(), store.profiles.len());
         assert_eq!(vm.add_profile, ProfileDraft::default());
+    }
+
+    #[test]
+    fn tab_focus_cycles_connect_fields_in_declaration_order_and_wraps() {
+        let mut vm = model();
+        vm.select_profile("example", 0);
+        assert_eq!(vm.focused(), None);
+
+        for field in [
+            FocusField::ConnectUsername,
+            FocusField::ConnectPassword,
+            FocusField::ConnectToken,
+        ] {
+            assert_eq!(vm.focus_next(), Some(field));
+        }
+        assert_eq!(
+            vm.focus_next(),
+            Some(FocusField::ConnectUsername),
+            "Tab wraps to the first field"
+        );
+    }
+
+    #[test]
+    fn shift_tab_focus_reverses_and_wraps() {
+        let mut vm = model();
+        vm.select_profile("example", 0);
+
+        assert_eq!(vm.focus_previous(), Some(FocusField::ConnectToken));
+        assert_eq!(vm.focus_previous(), Some(FocusField::ConnectPassword));
+        assert_eq!(vm.focus_previous(), Some(FocusField::ConnectUsername));
+        assert_eq!(
+            vm.focus_previous(),
+            Some(FocusField::ConnectToken),
+            "Shift+Tab wraps to the last field"
+        );
+    }
+
+    #[test]
+    fn add_profile_and_settings_focus_orders_are_declared_and_wrap() {
+        let mut vm = model();
+        vm.begin_add_profile();
+        for field in [
+            FocusField::AddProfileName,
+            FocusField::AddProfileUrl,
+            FocusField::AddProfileRealm,
+            FocusField::AddProfileUsername,
+        ] {
+            assert_eq!(vm.focus_next(), Some(field));
+        }
+        assert_eq!(vm.focus_next(), Some(FocusField::AddProfileName));
+
+        vm.select_for_settings("example", 0);
+        assert_eq!(vm.focus_next(), Some(FocusField::SettingsTotp));
+        assert_eq!(vm.focus_next(), Some(FocusField::SettingsTotp));
+        assert_eq!(vm.focus_previous(), Some(FocusField::SettingsTotp));
+    }
+
+    #[test]
+    fn enter_maps_to_the_primary_action_per_screen() {
+        let mut vm = model();
+        vm.select_profile("example", 0);
+        assert_eq!(vm.primary_action(), Some(PrimaryAction::Connect));
+
+        vm.begin_add_profile();
+        assert_eq!(vm.primary_action(), Some(PrimaryAction::SaveProfile));
+
+        vm.select_for_settings("example", 0);
+        assert_eq!(vm.primary_action(), None);
+        vm.set_totp_input("JBSWY3DPEHPK3PXP".into());
+        assert_eq!(vm.primary_action(), Some(PrimaryAction::TotpValidate));
+        vm.validate_totp_input().expect("valid secret");
+        assert_eq!(vm.primary_action(), Some(PrimaryAction::TotpSave));
+
+        vm.apply_status(connected_report());
+        assert_eq!(vm.primary_action(), Some(PrimaryAction::Disconnect));
+
+        vm.set_screen(Screen::Profiles);
+        assert_eq!(vm.primary_action(), None);
+    }
+
+    #[test]
+    fn each_focus_field_has_a_unique_widget_id() {
+        let mut ids = std::collections::BTreeSet::new();
+        for screen in [
+            Screen::Profiles,
+            Screen::Connect,
+            Screen::Connected,
+            Screen::Settings,
+            Screen::AddProfile,
+        ] {
+            for field in focus_fields(screen) {
+                assert!(ids.insert(field.id()), "duplicate id {}", field.id());
+            }
+        }
     }
 }

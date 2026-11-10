@@ -1,6 +1,8 @@
 //! The `iced` shell. All behaviour lives in [`crate::view_model`]; this module
 //! only renders it and turns widget messages into view-model transitions.
 
+use iced::keyboard::key::Named;
+use iced::keyboard::{Key, Modifiers};
 use iced::widget::{button, column, container, row, scrollable, text, text_input, Space};
 use iced::{
     window, Alignment, Background, Border, Color, Element, Length, Subscription, Task, Theme,
@@ -16,8 +18,8 @@ use crate::tray::{self, TrayEvent};
 use crate::view_model::{
     format_bytes, format_uptime, now_unix, poll_interval, render_address, render_dns, render_mtu,
     render_routes, split_tunnel_preview, tick_interval, ConnectCredentials, ConnectionState,
-    DecodedTotpSecret, ProfileDot, QuitPlan, Screen, SecretField, TotpEnrolment, TrayMenuState,
-    ViewModel,
+    DecodedTotpSecret, FocusField, PrimaryAction, ProfileDot, QuitPlan, Screen, SecretField,
+    TotpEnrolment, TrayMenuState, ViewModel,
 };
 
 /// A short banner colour for failures and notices.
@@ -32,6 +34,14 @@ const MUTED: Color = Color::from_rgb(0.55, 0.60, 0.66);
 #[derive(Debug, Clone)]
 pub enum Message {
     Tick,
+    /// Tab pressed without Shift.
+    FocusNext,
+    /// Shift+Tab pressed.
+    FocusPrevious,
+    /// Enter pressed: submit the screen's primary action.
+    SubmitPrimary,
+    /// Escape pressed: close the open sheet.
+    Dismiss,
     StatusPolled(Result<(StatusReport, String), ClientError>),
     SelectProfile(String),
     TotpLoaded {
@@ -154,16 +164,13 @@ impl App {
             None => Subscription::none(),
         };
         let close = window::close_requests().map(Message::WindowCloseRequested);
-        #[cfg(target_os = "macos")]
-        let quit = iced::keyboard::on_key_press(cmd_q);
-        #[cfg(not(target_os = "macos"))]
-        let quit = Subscription::none();
+        let keys = iced::keyboard::on_key_press(handle_key);
         Subscription::batch([
             tick,
             tray::subscription(),
             crate::instance::subscription(),
             close,
-            quit,
+            keys,
         ])
     }
 
@@ -176,6 +183,25 @@ impl App {
 
     fn handle(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::FocusNext => return focus_task(self.vm.focus_next()),
+            Message::FocusPrevious => return focus_task(self.vm.focus_previous()),
+            Message::SubmitPrimary => {
+                if let Some(message) = primary_message(&self.vm) {
+                    return self.handle(message);
+                }
+            }
+            Message::Dismiss => {
+                if self.vm.quit_confirmation.is_some() {
+                    self.vm.cancel_quit();
+                } else {
+                    let message = match self.vm.screen {
+                        Screen::Connect | Screen::Settings | Screen::Connected => Message::Back,
+                        Screen::AddProfile => Message::CancelAddProfile,
+                        Screen::Profiles => return Task::none(),
+                    };
+                    return self.handle(message);
+                }
+            }
             Message::Tick => {
                 self.vm.tick(now_unix());
                 if poll_interval(&self.vm.state).is_some() && !self.poll_in_flight {
@@ -203,11 +229,11 @@ impl App {
                 self.vm.set_totp_secret(&profile, secret);
             }
             Message::ShowProfiles => {
-                self.vm.screen = Screen::Profiles;
+                self.vm.set_screen(Screen::Profiles);
                 self.vm.notice = None;
             }
             Message::ShowSettings => {
-                self.vm.screen = Screen::Settings;
+                self.vm.set_screen(Screen::Settings);
                 self.vm.notice = None;
             }
             Message::SettingsForProfile(name) => {
@@ -239,11 +265,12 @@ impl App {
                 }
             }
             Message::Back => {
-                self.vm.screen = if self.vm.state == ConnectionState::Connected {
+                let screen = if self.vm.state == ConnectionState::Connected {
                     Screen::Connected
                 } else {
                     Screen::Profiles
                 };
+                self.vm.set_screen(screen);
                 self.vm.notice = None;
             }
             Message::Username(value) => self.vm.username = value,
@@ -681,6 +708,7 @@ impl App {
 
         form = form.push(text("Name").size(12).color(MUTED)).push(
             text_input("profile name", &self.vm.add_profile.name)
+                .id(FocusField::AddProfileName.id())
                 .on_input(Message::AddProfileName)
                 .padding(8)
                 .width(Length::Fill),
@@ -691,6 +719,7 @@ impl App {
 
         form = form.push(text("Gateway URL").size(12).color(MUTED)).push(
             text_input("https://vpn.example.net/realm", &self.vm.add_profile.url)
+                .id(FocusField::AddProfileUrl.id())
                 .on_input(Message::AddProfileUrl)
                 .padding(8)
                 .width(Length::Fill),
@@ -701,6 +730,7 @@ impl App {
 
         form = form.push(text("Realm").size(12).color(MUTED)).push(
             text_input("authentication realm", &self.vm.add_profile.realm)
+                .id(FocusField::AddProfileRealm.id())
                 .on_input(Message::AddProfileRealm)
                 .padding(8)
                 .width(Length::Fill),
@@ -711,6 +741,7 @@ impl App {
 
         form = form.push(text("Username").size(12).color(MUTED)).push(
             text_input("username", &self.vm.add_profile.username)
+                .id(FocusField::AddProfileUsername.id())
                 .on_input(Message::AddProfileUsername)
                 .padding(8)
                 .width(Length::Fill),
@@ -763,11 +794,13 @@ impl App {
             text(profile_line).size(12).color(MUTED),
             text("Username").size(12).color(MUTED),
             text_input("username", &self.vm.username)
+                .id(FocusField::ConnectUsername.id())
                 .on_input(Message::Username)
                 .padding(8)
                 .width(Length::Fill),
             text("Password").size(12).color(MUTED),
             text_input("password", &self.vm.password)
+                .id(FocusField::ConnectPassword.id())
                 .secure(true)
                 .on_input(|value| Message::Password(SecretField::new(value)))
                 .padding(8)
@@ -782,6 +815,7 @@ impl App {
                     .push(text("One-time token").size(12).color(MUTED))
                     .push(
                         text_input("generated from the enrolled TOTP secret", &self.vm.token)
+                            .id(FocusField::ConnectToken.id())
                             .on_input(|value| Message::Token(SecretField::new(value)))
                             .padding(8)
                             .width(Length::Fill),
@@ -793,6 +827,7 @@ impl App {
                     .push(text("One-time token").size(12).color(MUTED))
                     .push(
                         text_input("token (leave empty if not required)", &self.vm.token)
+                            .id(FocusField::ConnectToken.id())
                             .on_input(|value| Message::Token(SecretField::new(value)))
                             .padding(8)
                             .width(Length::Fill),
@@ -1267,15 +1302,59 @@ fn focus_window() -> Task<Message> {
     })
 }
 
-#[cfg(target_os = "macos")]
-fn cmd_q(key: iced::keyboard::Key, modifiers: iced::keyboard::Modifiers) -> Option<Message> {
+/// Keyboard navigation shared by every platform.
+///
+/// Tab and Shift+Tab move through the view model's declaration-ordered field
+/// list, Enter submits the screen's primary action and Escape closes the open
+/// sheet (or the quit confirmation). Tab is handled here rather than by the
+/// text widget so it works even when no field has focus yet.
+fn handle_key(key: Key, modifiers: Modifiers) -> Option<Message> {
+    #[cfg(target_os = "macos")]
+    if let Some(message) = cmd_q(&key, modifiers) {
+        return Some(message);
+    }
+
     match key {
-        iced::keyboard::Key::Character(character)
+        Key::Named(Named::Tab) if modifiers.shift() => Some(Message::FocusPrevious),
+        Key::Named(Named::Tab) => Some(Message::FocusNext),
+        Key::Named(Named::Enter) => Some(Message::SubmitPrimary),
+        Key::Named(Named::Escape) => Some(Message::Dismiss),
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn cmd_q(key: &Key, modifiers: Modifiers) -> Option<Message> {
+    match key {
+        Key::Character(character)
             if modifiers.command() && character.as_str().eq_ignore_ascii_case("q") =>
         {
             Some(Message::QuitRequested)
         }
         _ => None,
+    }
+}
+
+/// Move keyboard focus to the field the view model selected.
+///
+/// `iced`'s `text_input::focus` is the same focusable operation used by
+/// `widget::focus_next`; driving it from the view model's list gives a stable
+/// declaration order and an explicit wrap at both ends.
+fn focus_task(field: Option<FocusField>) -> Task<Message> {
+    match field {
+        Some(field) => iced::widget::text_input::focus(field.id()),
+        None => Task::none(),
+    }
+}
+
+/// Map the screen's primary action to the widget message Enter submits.
+fn primary_message(vm: &ViewModel) -> Option<Message> {
+    match vm.primary_action()? {
+        PrimaryAction::Connect => Some(Message::Connect),
+        PrimaryAction::SaveProfile => Some(Message::SaveProfile),
+        PrimaryAction::TotpValidate => Some(Message::TotpValidate),
+        PrimaryAction::TotpSave => Some(Message::TotpSave),
+        PrimaryAction::Disconnect => Some(Message::Disconnect),
     }
 }
 
@@ -1366,4 +1445,205 @@ fn totp_remove_task(profile: String) -> Task<Message> {
             result,
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn app() -> App {
+        App {
+            vm: ViewModel::new(&ProfileStore::default(), "endpoint".into(), 0),
+            poll_in_flight: false,
+            notifier: Box::new(crate::notifications::RecordingNotifier::default()),
+            tray: tray::Handle::for_test(),
+            tray_state: None,
+        }
+    }
+
+    #[test]
+    fn keyboard_navigation_messages_are_mapped_per_key() {
+        assert!(matches!(
+            handle_key(Key::Named(Named::Tab), Modifiers::default()),
+            Some(Message::FocusNext)
+        ));
+        assert!(matches!(
+            handle_key(Key::Named(Named::Tab), Modifiers::SHIFT),
+            Some(Message::FocusPrevious)
+        ));
+        assert!(matches!(
+            handle_key(Key::Named(Named::Enter), Modifiers::default()),
+            Some(Message::SubmitPrimary)
+        ));
+        assert!(matches!(
+            handle_key(Key::Named(Named::Escape), Modifiers::default()),
+            Some(Message::Dismiss)
+        ));
+    }
+
+    fn vm_with_profile() -> ViewModel {
+        let mut store = ProfileStore::default();
+        let profile = aevan_core::Profile::new("example", "https://vpn.example.net/realm", "realm")
+            .expect("profile");
+        store.add(profile).expect("add profile");
+        ViewModel::new(&store, "endpoint".into(), 0)
+    }
+
+    #[test]
+    fn enter_maps_to_the_primary_message_per_screen() {
+        let mut vm = vm_with_profile();
+        vm.set_screen(Screen::Connect);
+        assert!(matches!(primary_message(&vm), Some(Message::Connect)));
+
+        vm.set_screen(Screen::AddProfile);
+        assert!(matches!(primary_message(&vm), Some(Message::SaveProfile)));
+
+        vm.set_screen(Screen::Settings);
+        assert!(primary_message(&vm).is_none());
+        vm.set_totp_input("JBSWY3DPEHPK3PXP".into());
+        assert!(matches!(primary_message(&vm), Some(Message::TotpValidate)));
+
+        vm.set_screen(Screen::Profiles);
+        assert!(primary_message(&vm).is_none());
+    }
+
+    #[test]
+    fn failing_handlers_set_a_banner_instead_of_panicking() {
+        let mut app = app();
+
+        let _ = app.update(Message::TotpSaved {
+            profile: "example".into(),
+            secret: DecodedTotpSecret::new(Vec::new()),
+            result: Err("permission denied".into()),
+        });
+        assert!(app
+            .vm
+            .notice
+            .as_deref()
+            .is_some_and(|notice| notice.contains("could not save")));
+
+        let _ = app.update(Message::TotpRemoved {
+            profile: "example".into(),
+            result: Err("permission denied".into()),
+        });
+        assert!(app
+            .vm
+            .notice
+            .as_deref()
+            .is_some_and(|notice| notice.contains("could not remove")));
+
+        let _ = app.update(Message::StartDaemonFinished(Err("prompt cancelled".into())));
+        assert_eq!(app.vm.notice.as_deref(), Some("prompt cancelled"));
+
+        let _ = app.update(Message::AutostartChanged(Err("access denied".into())));
+        assert!(app
+            .vm
+            .notice
+            .as_deref()
+            .is_some_and(|notice| notice.contains("could not change")));
+
+        let _ = app.update(Message::AutostartStatusLoaded(Err("unavailable".into())));
+        assert!(matches!(
+            app.vm.autostart,
+            crate::view_model::AutostartState::Unavailable(_)
+        ));
+
+        let _ = app.update(Message::Connect);
+        assert!(app
+            .vm
+            .notice
+            .as_deref()
+            .is_some_and(|notice| notice.contains("select a profile")));
+
+        let _ = app.update(Message::StatusPolled(Err(ClientError::Transport(
+            "poll failed".into(),
+        ))));
+        assert!(matches!(app.vm.state, ConnectionState::Failed { .. }));
+
+        let _ = app.update(Message::ConnectFinished(Err(ClientError::Transport(
+            "connect failed".into(),
+        ))));
+        assert!(matches!(app.vm.state, ConnectionState::Failed { .. }));
+
+        let _ = app.update(Message::DisconnectFinished(Err(ClientError::Transport(
+            "disconnect failed".into(),
+        ))));
+        assert!(matches!(app.vm.state, ConnectionState::Failed { .. }));
+
+        let _ = app.update(Message::RecoveryRetried(Err(ClientError::Transport(
+            "recovery failed".into(),
+        ))));
+        assert!(matches!(app.vm.state, ConnectionState::Failed { .. }));
+
+        let _ = app.update(Message::TotpSave);
+        assert!(app
+            .vm
+            .notice
+            .as_deref()
+            .is_some_and(|notice| notice.contains("validate the secret")));
+    }
+
+    fn section<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
+        let from = source.find(start).expect("start marker");
+        let rest = &source[from..];
+        let to = rest.find(end).expect("end marker");
+        &rest[..to]
+    }
+
+    #[test]
+    fn the_connect_handler_has_no_process_url_or_elevation_path() {
+        let app = include_str!("app.rs");
+        let handler = section(
+            app,
+            "Message::Connect => {",
+            "Message::ConnectFinished(result) =>",
+        );
+        let bridge = include_str!("daemon_bridge.rs");
+        let connect = section(bridge, "pub fn connect(", "pub fn disconnect(");
+
+        for source in [handler, connect] {
+            for needle in [
+                "Command::new",
+                "std::process",
+                "osascript",
+                "launchctl",
+                "webbrowser",
+                "notify_rust",
+                "open_url",
+                "StartDaemon",
+                "start_elevated",
+            ] {
+                assert!(
+                    !source.contains(needle),
+                    "the connect path contains {needle}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn production_gui_code_has_no_panics() {
+        // Everything before the test module is the code shipped in the GUI.
+        // A failed system interaction must become a banner, never a panic.
+        for source in [
+            include_str!("app.rs"),
+            include_str!("daemon_bridge.rs"),
+            include_str!("view_model.rs"),
+            include_str!("relaunch.rs"),
+            include_str!("start_log.rs"),
+        ] {
+            let production = source.split("#[cfg(test)]").next().unwrap_or(source);
+            for needle in [
+                concat!(".", "unwrap()"),
+                concat!(".", "expect("),
+                concat!("panic", "!"),
+                concat!("unreachable", "!"),
+            ] {
+                assert!(
+                    !production.contains(needle),
+                    "production GUI code contains {needle}"
+                );
+            }
+        }
+    }
 }

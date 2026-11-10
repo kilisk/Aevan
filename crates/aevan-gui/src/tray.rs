@@ -69,6 +69,23 @@ pub fn start() -> Handle {
     }
 }
 
+#[cfg(test)]
+impl Handle {
+    /// A handle that owns no platform tray, for offline app tests.
+    pub fn for_test() -> Self {
+        #[cfg(target_os = "macos")]
+        {
+            Handle {
+                backend: macos::test_handle(),
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            Handle {}
+        }
+    }
+}
+
 impl Handle {
     /// Push the current menu enablement and status into the tray.
     pub fn sync(&self, state: &TrayMenuState) {
@@ -351,6 +368,11 @@ mod macos {
 
     pub struct Handle {
         backend: Option<Rc<RefCell<Backend>>>,
+    }
+
+    #[cfg(test)]
+    pub fn test_handle() -> Handle {
+        Handle { backend: None }
     }
 
     pub fn start() -> Handle {
