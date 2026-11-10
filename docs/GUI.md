@@ -391,8 +391,9 @@ unload) disables it. The Linux entry is a standard desktop autostart file with
 XDG entry is the simpler equivalent and needs no service manager. Enable and
 disable are idempotent, and a missing file reports `Absent`.
 
-All three paths are tested with an injected command runner and temporary home
-directories, so the enable/disable/state cycle runs offline on every build host.
+The macOS and Linux paths are tested with an injected command runner and
+temporary home directories, so the enable/disable/state cycle runs offline on
+every build host; the Windows task path keeps its existing `schtasks` tests.
 
 ## What the GUI explicitly does not do
 
