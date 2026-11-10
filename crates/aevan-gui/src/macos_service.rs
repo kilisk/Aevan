@@ -7,7 +7,7 @@
 //! Registration is idempotent: an already-registered service is success, and
 //! unregistering an absent service is success.
 
-use crate::relaunch::{ServiceState, APPROVAL_REQUIRED_MESSAGE, NOT_FOUND_MESSAGE};
+use crate::relaunch::ServiceState;
 
 /// File name of the bundled LaunchDaemon plist.
 pub const PLIST_NAME: &str = "com.github.kilisk.aevand.plist";
@@ -46,7 +46,7 @@ mod imp {
         kSMErrorLaunchDeniedByUser, SMAppService, SMAppServiceStatus,
     };
 
-    use crate::relaunch::ServiceState;
+    use crate::relaunch::{ServiceState, APPROVAL_REQUIRED_MESSAGE, NOT_FOUND_MESSAGE};
 
     use super::PLIST_NAME;
 
