@@ -216,8 +216,10 @@ fn open_totp_store() -> Result<Box<dyn aevan_secrets::SecretStore>, String> {
 /// Start `aevand` beside this GUI, then wait for the control endpoint.
 ///
 /// macOS registers the bundled LaunchDaemon with ServiceManagement once and
-/// reuses it afterwards; Windows keeps the single UAC elevation. Nothing is
-/// started silently: this is only called by the explicit start action.
+/// reuses it afterwards; an ad-hoc signed build falls back to the legacy
+/// LaunchDaemon with one administrator prompt. Windows keeps the single UAC
+/// elevation. Nothing is started silently: this is only called by the explicit
+/// start action.
 pub fn start_daemon() -> Result<(), String> {
     let executable = daemon_binary()?;
     start_daemon_beside(&executable).map_err(|message| {
@@ -229,16 +231,19 @@ pub fn start_daemon() -> Result<(), String> {
 }
 
 #[cfg(target_os = "macos")]
-fn start_daemon_beside(_executable: &Path) -> Result<(), String> {
+fn start_daemon_beside(executable: &Path) -> Result<(), String> {
     use aevan_daemon::launchd;
 
+    use crate::macos_elevate;
     use crate::macos_service;
-    use crate::relaunch::{self, RelaunchOps};
+    use crate::relaunch::{self, RegisterMethod, RelaunchOps, StartMethod};
     use crate::start_log;
 
-    struct MacOps;
+    struct MacOps<'a> {
+        executable: &'a Path,
+    }
 
-    impl RelaunchOps for MacOps {
+    impl RelaunchOps for MacOps<'_> {
         fn socket_answers(&self) -> bool {
             client::request(&Request::status(), Some(STATUS_TIMEOUT)).is_ok()
         }
@@ -247,8 +252,20 @@ fn start_daemon_beside(_executable: &Path) -> Result<(), String> {
             macos_service::status()
         }
 
-        fn register(&self) -> Result<(), String> {
-            macos_service::register()
+        fn register(&self) -> Result<RegisterMethod, String> {
+            match macos_service::register() {
+                Ok(()) => Ok(RegisterMethod::ServiceManagement),
+                Err(error) if macos_elevate::should_fall_back(&error) => {
+                    // An ad-hoc signed build cannot use SMAppService. If the
+                    // legacy plist already exists, macOS started it at boot and
+                    // later launches must not prompt again.
+                    if !macos_elevate::daemon_installed() {
+                        macos_elevate::install(self.executable)?;
+                    }
+                    Ok(RegisterMethod::LegacyLaunchDaemon)
+                }
+                Err(error) => Err(error),
+            }
         }
 
         fn kickstart(&self) -> Result<(), String> {
@@ -261,20 +278,25 @@ fn start_daemon_beside(_executable: &Path) -> Result<(), String> {
         }
     }
 
-    match relaunch::relaunch(&MacOps) {
+    match relaunch::relaunch(&MacOps { executable }) {
         Ok(report) => {
-            let _ = start_log::record_default(
-                &format!("SMAppService daemon registration ({:?})", report.method),
-                None,
-                "",
-            );
+            let command = match report.method {
+                StartMethod::LegacyInstalled => {
+                    format!(
+                        "legacy LaunchDaemon install ({})",
+                        macos_elevate::INSTALLED_PLIST
+                    )
+                }
+                _ => format!("SMAppService daemon registration ({:?})", report.method),
+            };
+            let _ = start_log::record_default(&command, None, "");
             tracing::info!(method = ?report.method, "daemon service start finished");
             Ok(())
         }
         Err(error) => {
             let _ = start_log::record_default(
                 &format!(
-                    "SMAppService daemon registration {}",
+                    "macOS daemon registration (SMAppService, then legacy fallback, {})",
                     macos_service::PLIST_NAME
                 ),
                 None,
@@ -373,7 +395,7 @@ pub fn set_autostart(enabled: bool) -> Result<TaskState, String> {
                 }
                 Ok(state) => {
                     return Err(format!(
-                        "aevand did not change the autostart task to {expected:?} (it reports {state:?})"
+                        "The Aevan daemon did not change the autostart task to {expected:?} (it reports {state:?})"
                     ))
                 }
                 Err(error) => return Err(error.to_string()),
@@ -410,7 +432,7 @@ fn daemon_binary() -> Result<PathBuf, String> {
         let current = std::env::current_exe()
             .map(|path| path.display().to_string())
             .unwrap_or_else(|_| "aevan-gui".to_owned());
-        format!("{name} is missing beside {current}")
+        format!("The Aevan daemon program ({name}) is missing beside {current}; reinstall Aevan")
     })
 }
 

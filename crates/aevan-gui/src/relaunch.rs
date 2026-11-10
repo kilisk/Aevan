@@ -3,9 +3,13 @@
 //! The daemon is a system LaunchDaemon whose plist ships inside the app bundle.
 //! macOS 13 and later register that plist through ServiceManagement's
 //! `SMAppService`; the user approves it once in System Settings > Login Items &
-//! Extensions. There are no administrator prompts and no elevated shell
-//! commands in this path. Approval is surfaced as its own state and is never
-//! retried silently.
+//! Extensions.
+//!
+//! An ad-hoc signed build cannot be registered by `SMAppService`. In that case
+//! the caller falls back once to the legacy LaunchDaemon install (a single
+//! administrator prompt, implemented in `macos_elevate`). The fallback is
+//! recorded by the caller; approval outstanding is surfaced as its own state and
+//! is never retried silently.
 
 use std::fmt;
 
@@ -69,6 +73,18 @@ pub enum StartMethod {
     Registered,
     /// An enabled service was asked to start again.
     Kickstarted,
+    /// The legacy LaunchDaemon was installed and bootstrapped for an unsigned
+    /// build.
+    LegacyInstalled,
+}
+
+/// How `register` made the daemon available.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegisterMethod {
+    /// Registered through `SMAppService`.
+    ServiceManagement,
+    /// Installed as a legacy `/Library/LaunchDaemons` plist.
+    LegacyLaunchDaemon,
 }
 
 /// The result of a start decision.
@@ -90,7 +106,7 @@ pub trait RelaunchOps {
     fn service_status(&self) -> Result<ServiceState, String>;
 
     /// Register the bundled LaunchDaemon. Already-registered is success.
-    fn register(&self) -> Result<(), String>;
+    fn register(&self) -> Result<RegisterMethod, String>;
 
     /// Ask an enabled service to start again.
     fn kickstart(&self) -> Result<(), String>;
@@ -118,9 +134,8 @@ pub fn relaunch(ops: &impl RelaunchOps) -> Result<StartReport, String> {
             })
         }
         ServiceState::RequiresApproval => Err(APPROVAL_REQUIRED_MESSAGE.to_owned()),
-        ServiceState::NotRegistered => {
-            ops.register()?;
-            match ops.service_status()? {
+        ServiceState::NotRegistered => match ops.register()? {
+            RegisterMethod::ServiceManagement => match ops.service_status()? {
                 ServiceState::Enabled => {
                     let _ = ops.kickstart();
                     ops.wait_ready()?;
@@ -133,8 +148,17 @@ pub fn relaunch(ops: &impl RelaunchOps) -> Result<StartReport, String> {
                 other => Err(format!(
                     "the Aevan daemon was registered but reports {other}"
                 )),
+            },
+            RegisterMethod::LegacyLaunchDaemon => {
+                // RunAtLoad and KeepAlive own the start; a kickstart is
+                // best-effort and the socket answering is the proof.
+                let _ = ops.kickstart();
+                ops.wait_ready()?;
+                Ok(StartReport {
+                    method: StartMethod::LegacyInstalled,
+                })
             }
-        }
+        },
         ServiceState::NotFound => Err(NOT_FOUND_MESSAGE.to_owned()),
         ServiceState::Unavailable(reason) => Err(reason),
     }
@@ -152,6 +176,7 @@ mod tests {
         socket_answers: bool,
         states: RefCell<VecDeque<ServiceState>>,
         register_error: Option<String>,
+        legacy_fallback: bool,
         sockets: Cell<usize>,
         statuses: Cell<usize>,
         registers: Cell<usize>,
@@ -183,11 +208,12 @@ mod tests {
                 .ok_or_else(|| "the fake has no status left".to_owned())
         }
 
-        fn register(&self) -> Result<(), String> {
+        fn register(&self) -> Result<RegisterMethod, String> {
             self.registers.set(self.registers.get() + 1);
             match &self.register_error {
                 Some(error) => Err(error.clone()),
-                None => Ok(()),
+                None if self.legacy_fallback => Ok(RegisterMethod::LegacyLaunchDaemon),
+                None => Ok(RegisterMethod::ServiceManagement),
             }
         }
 
@@ -255,6 +281,37 @@ mod tests {
         assert_eq!(fake.registers.get(), 1);
         assert_eq!(fake.kickstarts.get(), 1);
         assert_eq!(fake.waits.get(), 1);
+    }
+
+    #[test]
+    fn an_unsigned_build_installs_the_legacy_launchdaemon_once_and_waits() {
+        let fake = Fake {
+            states: RefCell::new([ServiceState::NotRegistered].into_iter().collect()),
+            legacy_fallback: true,
+            ..Fake::default()
+        };
+        let report = relaunch(&fake).expect("legacy fallback");
+        assert_eq!(report.method, StartMethod::LegacyInstalled);
+        assert_eq!(fake.registers.get(), 1);
+        assert_eq!(fake.statuses.get(), 1);
+        assert_eq!(fake.kickstarts.get(), 1);
+        assert_eq!(fake.waits.get(), 1);
+    }
+
+    #[test]
+    fn a_failed_fallback_is_reported_once_without_a_retry() {
+        let fake = Fake {
+            states: RefCell::new([ServiceState::NotRegistered].into_iter().collect()),
+            register_error: Some("the administrator prompt was cancelled".into()),
+            ..Fake::default()
+        };
+        assert_eq!(
+            relaunch(&fake).expect_err("fallback cancelled"),
+            "the administrator prompt was cancelled"
+        );
+        assert_eq!(fake.registers.get(), 1);
+        assert_eq!(fake.kickstarts.get(), 0);
+        assert_eq!(fake.waits.get(), 0);
     }
 
     #[test]

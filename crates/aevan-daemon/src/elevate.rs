@@ -6,9 +6,10 @@
 //! credential handling: the daemon is only a listener until a control request
 //! arrives.
 //!
-//! macOS has no elevated shell path here. The GUI registers the bundled
-//! LaunchDaemon with ServiceManagement, so the CLI only points the user at the
-//! app instead of starting a root process itself.
+//! macOS has no elevated shell path in the CLI. The GUI registers the bundled
+//! LaunchDaemon with ServiceManagement (and, for an ad-hoc signed build, falls
+//! back to one administrator prompt there), so the CLI only points the user at
+//! the app instead of starting a root process itself.
 //!
 //! Tests never call this module. The launcher's decision logic lives behind a
 //! trait in `aevan-cli`, so no process is spawned in the test suite.
@@ -182,7 +183,7 @@ mod imp {
 
     pub fn start_elevated(executable: &Path, _args: &[&str]) -> StartOutcome {
         StartOutcome::Failed(format!(
-            "starting {} with administrator privileges is not part of the macOS CLI; launch Aevan once so ServiceManagement can register the bundled LaunchDaemon",
+            "starting {} with administrator privileges is not part of the macOS CLI; launch Aevan once so it can register or install the bundled LaunchDaemon",
             executable.display()
         ))
     }

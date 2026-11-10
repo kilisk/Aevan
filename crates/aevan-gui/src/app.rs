@@ -1968,12 +1968,73 @@ mod tests {
     }
 
     #[test]
+    fn legacy_scripting_is_confined_to_the_macos_elevation_fallback() {
+        // Unsigned (ad-hoc signed) builds cannot use SMAppService. The one
+        // permitted exception is macos_elevate.rs, which runs the native
+        // administrator-prompt helper as a child and then writes the
+        // legacy LaunchDaemon. Remove that module and this exception once the
+        // app carries a Developer ID signature: SMAppService then works and no
+        // fallback is needed. Every other GUI module must stay free of scripting
+        // and shell spawning.
+        let files = [
+            ("app.rs", include_str!("app.rs")),
+            ("console.rs", include_str!("console.rs")),
+            ("daemon_bridge.rs", include_str!("daemon_bridge.rs")),
+            ("instance.rs", include_str!("instance.rs")),
+            ("macos_elevate.rs", include_str!("macos_elevate.rs")),
+            ("macos_service.rs", include_str!("macos_service.rs")),
+            ("main.rs", include_str!("main.rs")),
+            ("notifications.rs", include_str!("notifications.rs")),
+            ("relaunch.rs", include_str!("relaunch.rs")),
+            ("start_log.rs", include_str!("start_log.rs")),
+            ("tray.rs", include_str!("tray.rs")),
+            ("view_model.rs", include_str!("view_model.rs")),
+        ];
+        let banned = [
+            concat!("osa", "script"),
+            concat!("Apple", "Script"),
+            concat!("pb", "copy"),
+            concat!("SMJob", "Bless"),
+            concat!("Authorization", "ExecuteWithPrivileges"),
+            "Command::new",
+            "std::process::Command",
+            "launchctl",
+        ];
+        for &(name, source) in &files {
+            if name == "macos_elevate.rs" {
+                continue;
+            }
+            let production = source.split("#[cfg(test)]").next().unwrap_or(source);
+            for needle in banned {
+                assert!(
+                    !production.contains(needle),
+                    "{name} contains banned legacy API {needle}"
+                );
+            }
+        }
+
+        let scripting_files = files
+            .iter()
+            .filter(|(_, source)| {
+                source
+                    .split("#[cfg(test)]")
+                    .next()
+                    .unwrap_or(source)
+                    .contains(concat!("osa", "script"))
+            })
+            .map(|(name, _)| *name)
+            .collect::<Vec<_>>();
+        assert_eq!(scripting_files, vec!["macos_elevate.rs"]);
+    }
+
+    #[test]
     fn production_gui_code_has_no_panics() {
         // Everything before the test module is the code shipped in the GUI.
         // A failed system interaction must become a banner, never a panic.
         for source in [
             include_str!("app.rs"),
             include_str!("daemon_bridge.rs"),
+            include_str!("macos_elevate.rs"),
             include_str!("macos_service.rs"),
             include_str!("notifications.rs"),
             include_str!("view_model.rs"),

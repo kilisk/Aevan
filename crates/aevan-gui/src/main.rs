@@ -15,6 +15,8 @@ mod app;
 mod console;
 mod daemon_bridge;
 mod instance;
+#[cfg(any(target_os = "macos", test))]
+mod macos_elevate;
 #[cfg(target_os = "macos")]
 mod macos_service;
 mod notifications;

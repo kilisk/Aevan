@@ -105,7 +105,10 @@ pub const CAPABILITIES: &[Capability] = &[
         id: "daemon-registration",
         title: "Daemon registration",
         windows: &["packaging/windows/aevan.wxs"],
-        macos: &["crates/aevan-gui/src/macos_service.rs"],
+        macos: &[
+            "crates/aevan-gui/src/macos_service.rs",
+            "crates/aevan-gui/src/macos_elevate.rs",
+        ],
         linux: &["packaging/linux/aevand.service"],
     },
     Capability {
