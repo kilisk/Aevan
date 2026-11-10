@@ -2,7 +2,7 @@
 # Remove aevan on macOS. Installed as /usr/local/bin/aevan-uninstall.
 #
 # Stops the daemon first (so routes, DNS, the adapter and the journal are
-# released), then unloads the opt-in LaunchDaemon and removes the files.
+# released), unregisters the ServiceManagement daemon, then removes the files.
 # Idempotent: absent paths are reported, not treated as errors.
 set -u
 
@@ -15,8 +15,8 @@ for argument in "$@"; do
 Usage: sudo aevan-uninstall [--purge]
 
 Removes /Applications/Aevan.app, /usr/local/bin/{aevan,aevand,aevan-uninstall},
-the LaunchDaemon plist and its loaded state, the control socket and the
-daemon journal. The profile store is kept unless --purge is passed:
+the daemon registration and any legacy LaunchDaemon plist, the control socket
+and the daemon journal. The profile store is kept unless --purge is passed:
 
   ~/Library/Application Support/aevan
   ~/.config/aevan
@@ -86,7 +86,11 @@ if [ "$TARGET_HOME" != "/var/root" ]; then
     fi
 fi
 
-# The LaunchDaemon is opt-in; unload it if it was ever loaded.
+# Ask the app to remove its ServiceManagement registration while the bundle is
+# still present. Older versions installed a plist into /Library; clean that too.
+if [ -x /Applications/Aevan.app/Contents/MacOS/aevan-gui ]; then
+    /Applications/Aevan.app/Contents/MacOS/aevan-gui --unregister-daemon || true
+fi
 launchctl bootout system/com.github.kilisk.aevand 2>/dev/null || true
 launchctl unload -w /Library/LaunchDaemons/com.github.kilisk.aevand.plist 2>/dev/null || true
 

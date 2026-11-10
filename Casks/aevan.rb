@@ -7,14 +7,12 @@ cask "aevan" do
   desc "Independent Ivanti Secure Access (Network Connect) client"
   homepage "https://github.com/kilisk/Aevan"
 
-  depends_on macos: ">= :big_sur"
+  depends_on macos: ">= :ventura"
 
   app "Aevan.app"
 
   uninstall quit: "com.github.kilisk.aevan",
-            launchctl: "com.github.kilisk.aevand",
             delete: [
-              "/Library/LaunchDaemons/com.github.kilisk.aevand.plist",
               "~/Library/Application Support/aevan",
               "~/Library/Caches/com.github.kilisk.aevan",
               "~/Library/Preferences/com.github.kilisk.aevan.plist",
@@ -25,7 +23,6 @@ cask "aevan" do
         "/Applications/Aevan.app",
       ],
       delete: [
-        "/Library/LaunchDaemons/com.github.kilisk.aevand.plist",
         "~/Library/Application Support/aevan",
         "~/Library/Logs/Aevan",
         "~/Library/Caches/com.github.kilisk.aevan",
@@ -40,7 +37,8 @@ cask "aevan" do
         xattr -dr com.apple.quarantine /Applications/Aevan.app
 
       The app contains the daemon. Starting it from the Daemon unavailable
-      banner asks for administrator approval once.
+      banner registers the bundled LaunchDaemon with ServiceManagement; approve
+      Aevan in System Settings > Login Items & Extensions when macOS asks.
 
       This cask installs the app only. For aevan and aevand on PATH, install
       the .pkg from the same release.

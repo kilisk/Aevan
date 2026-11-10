@@ -153,8 +153,8 @@ dist-macos:
     @if command -v rustup >/dev/null 2>&1; then \
         rustup target add aarch64-apple-darwin x86_64-apple-darwin; \
     fi
-    cargo build --release --target aarch64-apple-darwin
-    cargo build --release --target x86_64-apple-darwin
+    MACOSX_DEPLOYMENT_TARGET=13.0 cargo build --release --target aarch64-apple-darwin
+    MACOSX_DEPLOYMENT_TARGET=13.0 cargo build --release --target x86_64-apple-darwin
     @mkdir -p {{universal_dir}} {{dist_dir}}
     lipo -create -output {{universal_dir}}/aevan target/aarch64-apple-darwin/release/aevan target/x86_64-apple-darwin/release/aevan
     lipo -create -output {{universal_dir}}/aevand target/aarch64-apple-darwin/release/aevand target/x86_64-apple-darwin/release/aevand

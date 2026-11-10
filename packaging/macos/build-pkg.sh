@@ -9,6 +9,9 @@ BIN="${2:?usage: build-pkg.sh <version> <universal-bin-dir> <dist-dir>}"
 DIST="${3:?usage: build-pkg.sh <version> <universal-bin-dir> <dist-dir>}"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+# The GUI, the daemon and the frameworks all target macOS 13 or later.
+export MACOSX_DEPLOYMENT_TARGET=13.0
 STAGE="$DIST/macos-staging"
 APP="$STAGE/Applications/Aevan.app"
 DMG_STAGE="$DIST/macos-dmg-staging"
@@ -30,7 +33,7 @@ build_icon() {
     #    a CI log says exactly why it did not run.
     if command -v actool >/dev/null 2>&1 && [ -d "$icon_dir" ]; then
         tmp="$(mktemp -d)"
-        if actool --compile "$tmp"                 --platform macosx                 --minimum-deployment-target 11.0                 --output-partial-info-plist "$tmp/asset-info.plist"                 --app-icon "Aevan Icon"                 "$icon_dir" >"$tmp/actool.log" 2>&1; then
+        if actool --compile "$tmp"                 --platform macosx                 --minimum-deployment-target 13.0                 --output-partial-info-plist "$tmp/asset-info.plist"                 --app-icon "Aevan Icon"                 "$icon_dir" >"$tmp/actool.log" 2>&1; then
             if [ -f "$tmp/Assets.car" ] && cp "$tmp/Assets.car" "$resources/Assets.car"; then
                 echo "icon: actool compiled the layered icon from 'Aevan Icon.icon' (Assets.car)"
             else
@@ -81,11 +84,16 @@ build_icon() {
 }
 
 rm -rf "$STAGE" "$DIST/Aevan.app" "$DMG_STAGE" "$DMG"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" \
+         "$APP/Contents/Library/LaunchDaemons"
 install -m 0755 "$BIN/aevan-gui" "$APP/Contents/MacOS/aevan-gui"
 # The drag-installed app must be self-sufficient: the GUI resolves aevand
 # beside its own executable instead of relying on /usr/local/bin.
 install -m 0755 "$BIN/aevand" "$APP/Contents/MacOS/aevand"
+# SMAppService registers this plist from inside the bundle. BundleProgram is
+# relative to the bundle root, so the app stays relocatable.
+install -m 0644 "$ROOT/packaging/macos/com.github.kilisk.aevand.plist" \
+    "$APP/Contents/Library/LaunchDaemons/com.github.kilisk.aevand.plist"
 sed "s/@VERSION@/$VERSION/g" \
     "$ROOT/packaging/macos/Info.plist.in" > "$APP/Contents/Info.plist"
 if ! build_icon "$APP/Contents/Resources"; then
@@ -106,15 +114,12 @@ cp -R "$APP" "$DIST/Aevan.app"
 
 mkdir -p "$STAGE/usr/local/bin" \
          "$STAGE/usr/local/share/doc/aevan" \
-         "$STAGE/Library/LaunchDaemons" \
          "$STAGE/Applications"
 cp -R "$DIST/Aevan.app" "$STAGE/Applications/Aevan.app"
 install -m 0755 "$BIN/aevan" "$STAGE/usr/local/bin/aevan"
 install -m 0755 "$BIN/aevand" "$STAGE/usr/local/bin/aevand"
 install -m 0755 "$ROOT/packaging/macos/uninstall.sh" \
     "$STAGE/usr/local/bin/aevan-uninstall"
-install -m 0644 "$ROOT/packaging/macos/com.github.kilisk.aevand.plist" \
-    "$STAGE/Library/LaunchDaemons/com.github.kilisk.aevand.plist"
 for file in README.md LICENSE LICENSE-APACHE LICENSE-MIT; do
     install -m 0644 "$ROOT/$file" "$STAGE/usr/local/share/doc/aevan/$file"
 done
@@ -123,7 +128,6 @@ pkgbuild --root "$STAGE" \
     --identifier com.github.kilisk.aevan \
     --version "$VERSION" \
     --install-location "/" \
-    --scripts "$ROOT/packaging/macos/scripts" \
     "$DIST/aevan-component.pkg"
 
 productbuild --package "$DIST/aevan-component.pkg" \

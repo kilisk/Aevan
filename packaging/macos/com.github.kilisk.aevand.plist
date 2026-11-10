@@ -4,16 +4,19 @@
 <dict>
 	<key>Label</key>
 	<string>com.github.kilisk.aevand</string>
-	<key>ProgramArguments</key>
-	<array>
-		<string>/Applications/Aevan.app/Contents/MacOS/aevand</string>
-	</array>
+	<key>BundleProgram</key>
+	<string>Contents/MacOS/aevand</string>
 	<key>RunAtLoad</key>
 	<true/>
 	<key>KeepAlive</key>
 	<true/>
 	<key>ProcessType</key>
 	<string>Interactive</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>HOME</key>
+		<string>/var/root</string>
+	</dict>
 	<key>StandardOutPath</key>
 	<string>/var/log/aevand.log</string>
 	<key>StandardErrorPath</key>
