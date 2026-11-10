@@ -22,18 +22,20 @@ Usage:
   aevand                 Run the daemon in the foreground (default)
   aevand --recover       Run crash-journal recovery once and exit
   aevand --install-autostart [--user <sid|DOMAIN\\name>]
-                        Register the per-user 'Aevan' logon task (Administrator)
+                        Register the per-user start-at-login item
   aevand --remove-autostart
-                        Delete the per-user 'Aevan' logon task (Administrator)
+                        Delete the per-user start-at-login item
   aevand --autostart-status
-                        Report whether the 'Aevan' logon task exists
+                        Report whether the start-at-login item exists
   aevand -h, --help      Print this help and exit
   aevand -V, --version   Print the version and exit
 
-The autostart task starts aevand at your logon with HighestAvailable. It is
-per-user on purpose: profiles and the crash journal live in your %APPDATA%,
-so a LocalSystem service would read the wrong store and own the wrong tunnel.
-Creating or removing the task requires Administrator and exits 6 otherwise.
+On Windows the autostart item is a per-user task that starts aevand at your
+logon with HighestAvailable; creating or removing it requires Administrator and
+exits 6 otherwise. On macOS and Linux it is the per-user GUI login item
+(LaunchAgent or XDG autostart entry) and needs no elevation. It is per-user on
+purpose: profiles and the crash journal live in your own config directory, so a
+system-wide service would read the wrong store and own the wrong tunnel.
 --autostart-status exits 0 when present, 1 when absent and 2 when unknown.
 
 Recovery probes the device first, so an absent device clears the journal

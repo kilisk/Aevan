@@ -20,6 +20,7 @@ const STATUS_TIMEOUT: Duration = Duration::from_secs(2);
 const DISCONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 const DAEMON_WAIT: Duration = Duration::from_secs(10);
+#[cfg(windows)]
 const AUTOSTART_WAIT: Duration = Duration::from_secs(10);
 
 /// The daemon endpoint shown in settings and reach-failure messages.
@@ -278,46 +279,70 @@ pub fn autostart_status() -> Result<TaskState, String> {
     autostart::status().map_err(|error| error.to_string())
 }
 
-/// Enable or disable the per-user autostart task through `aevand`.
+/// Enable or disable the per-user start-at-login item.
 ///
-/// The write goes through the existing `--install-autostart` /
-/// `--remove-autostart` commands, with one UAC prompt. Success is confirmed by
-/// polling the read-only status rather than guessing from the spawn result.
+/// Windows writes the existing elevated `aevand` logon task. macOS writes the
+/// user's LaunchAgent and Linux writes the XDG autostart entry; neither needs
+/// elevation and neither spawns a helper. Success is confirmed by reading the
+/// real state back rather than guessing from the write result.
 pub fn set_autostart(enabled: bool) -> Result<TaskState, String> {
-    let executable = daemon_binary()?;
-    let argument = if enabled {
-        "--install-autostart"
-    } else {
-        "--remove-autostart"
-    };
-    match elevate::start_elevated(&executable, &[argument]) {
-        StartOutcome::Started => {}
-        StartOutcome::Cancelled => {
-            return Err(
-                "changing start at login needs Administrator; the prompt was cancelled".to_owned(),
-            )
-        }
-        StartOutcome::Failed(message) => return Err(message),
-    }
-
     let expected = if enabled {
         TaskState::Present
     } else {
         TaskState::Absent
     };
-    let start = std::time::Instant::now();
-    loop {
-        match autostart::status() {
-            Ok(state) if state == expected => return Ok(state),
-            Ok(_) if start.elapsed() < AUTOSTART_WAIT => {
-                std::thread::sleep(Duration::from_millis(200));
+
+    #[cfg(windows)]
+    {
+        let executable = daemon_binary()?;
+        let argument = if enabled {
+            "--install-autostart"
+        } else {
+            "--remove-autostart"
+        };
+        match elevate::start_elevated(&executable, &[argument]) {
+            StartOutcome::Started => {}
+            StartOutcome::Cancelled => {
+                return Err(
+                    "changing start at login needs Administrator; the prompt was cancelled"
+                        .to_owned(),
+                )
             }
-            Ok(state) => {
-                return Err(format!(
-                "aevand did not change the autostart task to {expected:?} (it reports {state:?})"
+            StartOutcome::Failed(message) => return Err(message),
+        }
+
+        let start = std::time::Instant::now();
+        loop {
+            match autostart::status() {
+                Ok(state) if state == expected => return Ok(state),
+                Ok(_) if start.elapsed() < AUTOSTART_WAIT => {
+                    std::thread::sleep(Duration::from_millis(200));
+                }
+                Ok(state) => {
+                    return Err(format!(
+                        "aevand did not change the autostart task to {expected:?} (it reports {state:?})"
+                    ))
+                }
+                Err(error) => return Err(error.to_string()),
+            }
+        }
+    }
+
+    #[cfg(not(windows))]
+    {
+        let result = if enabled {
+            autostart::install(None).map(|_| ())
+        } else {
+            autostart::remove()
+        };
+        result.map_err(|error| error.to_string())?;
+        let state = autostart::status().map_err(|error| error.to_string())?;
+        if state == expected {
+            Ok(state)
+        } else {
+            Err(format!(
+                "the login item did not change to {expected:?} (it reports {state:?})"
             ))
-            }
-            Err(error) => return Err(error.to_string()),
         }
     }
 }

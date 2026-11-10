@@ -279,7 +279,7 @@ impl AutostartState {
     pub fn label(&self) -> String {
         match self {
             Self::Loading => "checking…".to_owned(),
-            Self::Present => "on — aevand starts at your logon".to_owned(),
+            Self::Present => "on — Aevan starts at your logon".to_owned(),
             Self::Absent => "off".to_owned(),
             Self::Unknown(detail) => format!("could not be read ({detail})"),
             Self::Unavailable(detail) => format!("not available on this platform ({detail})"),
