@@ -258,23 +258,30 @@ pub fn connect_session<C: TunnelControl>(
 
     let esp = EspSetup::negotiate(&config, &mut |bytes| handshake.write_all(bytes))?;
 
-    // Create the journal before the first change. Until changes are recorded it
-    // is empty, so a crash at this point recovers by doing nothing.
+    let mut device = match platform::open(plan.device_config()) {
+        Ok(device) => device,
+        Err(error) => return Err(tun_error(error)),
+    };
+    // The kernel assigns the interface name (macOS hands out the next free
+    // utun unit, unit 5 -> utun5), so the configured name is only a hint.
+    // Everything that touches the interface, and the journal that undoes it,
+    // must use the name the OS actually gave us.
+    let interface = resolve_interface(device.name(), &plan.device);
+    if interface != plan.device {
+        tracing::info!(
+            configured = %plan.device,
+            assigned = %interface,
+            "the OS assigned a different tunnel interface name"
+        );
+    }
+
+    // Create the journal before the first change, under the assigned name.
     let mut journal = match journal_path {
-        Some(path) => Some(Journal::create(path.to_owned(), plan.device.clone())?),
+        Some(path) => Some(Journal::create(path.to_owned(), interface.clone())?),
         None => None,
     };
 
-    let mut device = match platform::open(plan.device_config()) {
-        Ok(device) => device,
-        Err(error) => {
-            if let Some(journal) = journal.take() {
-                let _ = journal.remove();
-            }
-            return Err(tun_error(error));
-        }
-    };
-    let applier = match apply::platform_applier(Box::new(RealCommandRunner), &plan.device) {
+    let applier = match apply::platform_applier(Box::new(RealCommandRunner), &interface) {
         Ok(applier) => applier,
         Err(error) => {
             let _ = device.close();
@@ -325,6 +332,16 @@ pub fn connect_session<C: TunnelControl>(
         (Ok(()), Err(error)) => Err(error),
         (Ok(()), Ok(())) => Ok(()),
     }
+}
+
+/// The interface the tunnel actually owns.
+///
+/// The OS assigns it (macOS hands out the next free `utun` unit), so a
+/// configured name is only a fallback for backends that honour it.
+fn resolve_interface(assigned: Option<&str>, configured: &str) -> String {
+    assigned
+        .map(str::to_owned)
+        .unwrap_or_else(|| configured.to_owned())
 }
 
 /// Run the ESP loop until stop, peer loss or an error.
@@ -731,6 +748,15 @@ impl Drop for ConnectGuard {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_assigned_interface_name_wins_over_the_configured_one() {
+        // macOS hands out the next free utun unit, so configuring the
+        // requested name would configure an interface we do not own.
+        assert_eq!(resolve_interface(Some("utun5"), "utun0"), "utun5");
+        assert_eq!(resolve_interface(None, "utun0"), "utun0");
+        assert_eq!(resolve_interface(Some("aevan"), "aevan"), "aevan");
+    }
+
     use super::*;
     use std::cell::{Cell, RefCell};
     use std::net::Ipv4Addr;

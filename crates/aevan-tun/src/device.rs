@@ -82,6 +82,15 @@ pub trait Device {
     /// Send one packet. Returns the number of bytes accepted.
     fn send(&mut self, packet: &[u8]) -> Result<usize, TunError>;
 
+    /// The interface name the OS actually assigned, once opened.
+    ///
+    /// macOS assigns a `utunN` unit dynamically, so a configured name is only a
+    /// hint: anything that configures the interface (address, MTU, routes, DNS)
+    /// must use this value or it will configure a different interface.
+    fn name(&self) -> Option<&str> {
+        None
+    }
+
     /// A raw platform handle that becomes readable when a packet is waiting.
     ///
     /// The ESP loop waits on this together with the UDP socket so an idle

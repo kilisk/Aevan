@@ -15,6 +15,14 @@
 //! pure helpers [`strip_frame`] and [`frame_into`] hold that logic so it can be
 //! unit-tested without a device.
 //!
+//! # Blocking descriptor
+//!
+//! The control socket is left blocking on purpose. A dedicated reader thread
+//! (`crate::platform::reader`) owns the read side with a blocking `read`, the
+//! same pattern WireGuard uses; the ESP loop only writes. Do not set
+//! `O_NONBLOCK` on this descriptor. The assigned interface name and the
+//! descriptor number are logged at info when the device opens.
+//!
 //! # Privileges
 //!
 //! Creating a `utun` interface needs root. A socket or `connect` failure with
@@ -165,19 +173,11 @@ fn map_error(error: io::Error, context: &'static str) -> TunError {
     }
 }
 
-fn set_nonblocking(fd: c_int) -> Result<(), TunError> {
-    // SAFETY: `fd` is the live control socket owned by the caller.
-    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
-    if flags < 0 {
-        return Err(last_error("reading the utun socket flags"));
-    }
-    // SAFETY: same live descriptor; the option value is an integer.
-    if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
-        return Err(last_error("setting the utun socket non-blocking"));
-    }
+fn set_cloexec(fd: c_int) -> Result<(), TunError> {
     // Close-on-exec is best effort: it does not affect I/O, but keeps the
-    // tunnel descriptor out of unrelated children.
-    // SAFETY: same live descriptor.
+    // tunnel descriptor out of unrelated children. The descriptor itself stays
+    // blocking: the dedicated reader thread depends on a blocking `read`.
+    // SAFETY: `fd` is the live control socket owned by the caller.
     let descriptor_flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
     if descriptor_flags >= 0 {
         // SAFETY: same live descriptor.
@@ -273,7 +273,7 @@ fn configure(fd: c_int) -> Result<String, TunError> {
     }
 
     let name = read_interface_name(fd)?;
-    set_nonblocking(fd)?;
+    set_cloexec(fd)?;
     Ok(name)
 }
 
@@ -314,9 +314,21 @@ impl UtunDevice {
 }
 
 impl Device for UtunDevice {
+    fn name(&self) -> Option<&str> {
+        // The kernel assigns the unit (macOS: unit 5 -> utun5), so this is the
+        // only name anything may configure.
+        Some(&self.name)
+    }
+
     fn open(config: DeviceConfig) -> Result<Self, TunError> {
         config.validate()?;
         let (fd, name) = connect_control()?;
+        tracing::info!(
+            interface = %name,
+            fd,
+            backend = "macos-utun",
+            "tunnel device opened"
+        );
         let applier = crate::apply::platform_applier_unchecked(Box::new(RealCommandRunner), &name);
         Ok(Self {
             fd,
