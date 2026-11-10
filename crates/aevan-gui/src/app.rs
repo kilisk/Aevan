@@ -785,7 +785,7 @@ impl App {
                     text("Daemon unavailable").size(16).color(DANGER),
                     text(message).size(13),
                     text(
-                        "Start the daemon with `aevand`, or use the explicit start action in Settings. Connect only talks to the daemon socket."
+                        "Use Start daemon in Settings; Aevan asks for administrator approval once. Connect only talks to the daemon socket."
                     )
                     .size(13)
                     .color(MUTED),
@@ -1053,7 +1053,7 @@ impl App {
                     .push(text(message).size(13).color(DANGER))
                     .push(
                         text(
-                            "Connect only talks to the daemon socket. Start `aevand`, or use the explicit start action in Settings.",
+                            "Use Start daemon in Settings; Aevan asks for administrator approval once. Connect only talks to the daemon socket.",
                         )
                         .size(12)
                         .color(MUTED),

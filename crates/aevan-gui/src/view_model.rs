@@ -1874,7 +1874,7 @@ impl ViewModel {
             ClientError::Unavailable(_)
             | ClientError::AccessDenied(_)
             | ClientError::ProtocolMismatch(_) => {
-                self.mark_daemon_unavailable(error.to_string());
+                self.mark_daemon_unavailable(gui_reach_message(&error));
             }
             ClientError::Transport(_) | ClientError::Protocol(_) => {
                 self.mark_failed(error.to_string());
@@ -2106,6 +2106,28 @@ pub fn now_unix() -> u64 {
         .unwrap_or(0)
 }
 
+/// Rewrite shared daemon-client reach messages for the GUI.
+///
+/// `aevan-daemon`'s client is also the CLI's client, so its messages tell the
+/// reader to run `aevand`. The GUI must describe the GUI action instead; the
+/// endpoint prefix stays so a failure still names the socket.
+fn gui_reach_message(error: &ClientError) -> String {
+    let message = error.to_string();
+    let endpoint = message.split(" — ").next().unwrap_or(&message);
+    match error {
+        ClientError::Unavailable(_) => {
+            format!("{endpoint} — use Start daemon in Settings")
+        }
+        ClientError::AccessDenied(_) => format!(
+            "{endpoint} — use Start daemon in Settings; Aevan asks for administrator approval once and the daemon must run at the same elevation as Aevan"
+        ),
+        ClientError::ProtocolMismatch(_) => format!(
+            "{endpoint} — quit Aevan from the menu bar and reopen this same version so its daemon matches"
+        ),
+        ClientError::Transport(_) | ClientError::Protocol(_) => message,
+    }
+}
+
 fn state_from_report(report: &StatusReport) -> ConnectionState {
     match report.state.as_str() {
         "disconnected" => ConnectionState::Disconnected,
@@ -2212,18 +2234,39 @@ mod tests {
     }
 
     #[test]
-    fn a_reach_failure_moves_to_daemon_unavailable_with_the_message() {
+    fn a_reach_failure_moves_to_daemon_unavailable_with_gui_guidance() {
         let mut vm = model();
-        let message =
-            "cannot reach the aevan daemon on \\\\.\\pipe\\aevan: no daemon is listening — start aevand first";
+        let message = r"cannot reach the aevan daemon on \\.\pipe\aevan: no daemon is listening — start aevand first";
         vm.apply_client_error(ClientError::Unavailable(message.into()));
 
         assert!(matches!(
             vm.state,
             ConnectionState::DaemonUnavailable { .. }
         ));
-        assert_eq!(vm.state.message(), Some(message));
+        let shown = vm.state.message().expect("shown message");
+        assert!(!shown.contains("start aevand"), "{shown}");
+        assert!(shown.contains("use Start daemon in Settings"), "{shown}");
         assert_eq!(vm.profile_dot("example"), ProfileDot::Unavailable);
+    }
+
+    #[test]
+    fn access_denied_and_protocol_failures_name_no_cli_command() {
+        for error in [
+            ClientError::AccessDenied(
+                "cannot reach the aevan daemon on pipe: access denied — run aevand and aevan at the same elevation, or start aevand first"
+                    .into(),
+            ),
+            ClientError::ProtocolMismatch(
+                "cannot reach the aevan daemon on pipe: protocol mismatch — stop aevand and restart it with the same version as aevan"
+                    .into(),
+            ),
+        ] {
+            let mut vm = model();
+            vm.apply_client_error(error);
+            let shown = vm.state.message().expect("shown message");
+            assert!(!shown.contains("aevand"), "{shown}");
+            assert!(!shown.contains("run aevan"), "{shown}");
+        }
     }
 
     #[test]
