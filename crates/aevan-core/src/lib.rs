@@ -9,6 +9,7 @@
 //! environment variables or log fields. [`redact`] exists so that diagnostic
 //! output can be made safe before it is printed or persisted.
 
+pub mod capabilities;
 pub mod error;
 pub mod paths;
 pub mod profile;
@@ -16,6 +17,7 @@ pub mod redact;
 pub mod state;
 pub mod timezone;
 
+pub use capabilities::{Capability, Platform, CAPABILITIES};
 pub use error::{exit_code, AevanError, AevanResult};
 pub use paths::{default_config_path, default_profiles_path};
 pub use profile::{Profile, ProfileStore, SplitTunnelIntent};
