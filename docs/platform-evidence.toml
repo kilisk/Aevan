@@ -7,9 +7,9 @@
 #
 # `source` names the run: a CI job or a dated user report. The Windows tunnel
 # evidence is the live verification recorded in docs/CONNECT.md (2026-11-04).
-# The macOS and Linux tun-device entries record only the CI smoke proof that the
-# device opens; the full tunnel is still compile-only, as docs/platform-gaps.toml
-# states.
+# The macOS and Linux tun-device entries record the CI smoke proof that the
+# device opens. That is a live device run; a full tunnel remains a gap, as
+# docs/platform-gaps.toml states.
 
 [[evidence]]
 capability = "tun-device"
@@ -20,13 +20,13 @@ source = "docs/CONNECT.md: live Windows tunnel verification (2026-11-04)"
 [[evidence]]
 capability = "tun-device"
 platform = "macos"
-state = "compile-only"
+state = "verified-live"
 source = "CI job test (macos-latest): tun_smoke opens utun; no full tunnel run"
 
 [[evidence]]
 capability = "tun-device"
 platform = "linux"
-state = "compile-only"
+state = "verified-live"
 source = "CI job test (ubuntu-latest): tun_smoke opens /dev/net/tun; no full tunnel run"
 
 [[evidence]]
