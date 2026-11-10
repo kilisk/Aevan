@@ -37,7 +37,7 @@ dependencies = [
 
 [[package]]
 name = "aevan-cli"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "aevan-core",
  "aevan-daemon",
@@ -57,7 +57,7 @@ dependencies = [
 
 [[package]]
 name = "aevan-core"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -67,7 +67,7 @@ dependencies = [
 
 [[package]]
 name = "aevan-daemon"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "aevan-core",
  "aevan-nc",
@@ -86,7 +86,7 @@ dependencies = [
 
 [[package]]
 name = "aevan-gui"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "aevan-core",
  "aevan-daemon",
@@ -114,14 +114,14 @@ dependencies = [
 
 [[package]]
 name = "aevan-ift"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "aevan-core",
 ]
 
 [[package]]
 name = "aevan-instance"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "aevan-core",
  "aevan-daemon",
@@ -131,7 +131,7 @@ dependencies = [
 
 [[package]]
 name = "aevan-nc"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "aes",
  "aevan-core",
@@ -151,7 +151,7 @@ dependencies = [
 
 [[package]]
 name = "aevan-proto"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "rustls",
  "serde",
@@ -164,7 +164,7 @@ dependencies = [
 
 [[package]]
 name = "aevan-secrets"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "hmac",
  "keyring",
@@ -176,7 +176,7 @@ dependencies = [
 
 [[package]]
 name = "aevan-tun"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "libc",
  "thiserror 2.0.21",
