@@ -6,6 +6,10 @@
 //! credential handling: the daemon is only a listener until a control request
 //! arrives.
 //!
+//! macOS has no elevated shell path here. The GUI registers the bundled
+//! LaunchDaemon with ServiceManagement, so the CLI only points the user at the
+//! app instead of starting a root process itself.
+//!
 //! Tests never call this module. The launcher's decision logic lives behind a
 //! trait in `aevan-cli`, so no process is spawned in the test suite.
 
@@ -22,44 +26,12 @@ pub enum StartOutcome {
     Failed(String),
 }
 
-/// A captured elevated command: what ran, how it exited and what it said.
-///
-/// The daemon-start log uses this to name a failure. It deliberately carries
-/// only the command, status and stderr; callers never put credentials in an
-/// elevated start command.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ScriptOutcome {
-    /// The exact shell command passed to the administrator prompt.
-    pub command: String,
-    /// The outcome classification used by existing callers.
-    pub outcome: StartOutcome,
-    /// The process exit status, when one was observed.
-    pub exit_status: Option<i32>,
-    /// Captured stderr, verbatim.
-    pub stderr: String,
-}
-
 /// Start `executable` with `args` elevated.
 ///
 /// Windows shows the single UAC prompt. Other platforms report that this is
 /// unsupported; the CLI prints the normal guidance to start `aevand` manually.
 pub fn start_elevated(executable: &Path, args: &[&str]) -> StartOutcome {
     imp::start_elevated(executable, args)
-}
-
-/// Run one shell command behind a single native administrator prompt.
-///
-/// macOS uses `osascript`; every other platform reports that this is
-/// unsupported. The command is expected to set a non-zero exit on failure so
-/// the platform reports [`StartOutcome::Failed`] with the tool's own message.
-pub fn run_script_elevated(script: &str) -> StartOutcome {
-    run_script_elevated_captured(script).outcome
-}
-
-/// Run one shell command behind a single native administrator prompt and
-/// return its command, exit status and stderr for diagnostics.
-pub fn run_script_elevated_captured(script: &str) -> ScriptOutcome {
-    imp::run_script_elevated_captured(script)
 }
 
 /// Start `executable` without a console and without waiting for it.
@@ -76,7 +48,7 @@ mod imp {
     use std::path::Path;
     use std::ptr;
 
-    use super::{ScriptOutcome, StartOutcome};
+    use super::StartOutcome;
 
     const SEE_MASK_NOCLOSEPROCESS: u32 = 0x0000_0040;
     const SW_HIDE: i32 = 0;
@@ -200,152 +172,19 @@ mod imp {
             .spawn()
             .map(|_child| ())
     }
-
-    pub fn run_script_elevated_captured(script: &str) -> ScriptOutcome {
-        ScriptOutcome {
-            command: script.to_owned(),
-            outcome: StartOutcome::Failed(
-                "administrator shell scripts are only implemented on macOS".into(),
-            ),
-            exit_status: None,
-            stderr: String::new(),
-        }
-    }
 }
 
 #[cfg(target_os = "macos")]
 mod imp {
-    use std::ffi::OsStr;
-    use std::os::unix::fs::MetadataExt;
     use std::path::Path;
-    use std::process::Command;
 
-    use super::{ScriptOutcome, StartOutcome};
+    use super::StartOutcome;
 
-    /// Quote one argument for `/bin/sh` using single quotes.
-    fn posix_quote(value: &OsStr) -> String {
-        let text = value.to_string_lossy();
-        let mut quoted = String::with_capacity(text.len() + 2);
-        quoted.push('\'');
-        for character in text.chars() {
-            if character == '\'' {
-                quoted.push_str("'\\''");
-            } else {
-                quoted.push(character);
-            }
-        }
-        quoted.push('\'');
-        quoted
-    }
-
-    /// Quote a whole command line as an AppleScript string literal.
-    fn apple_script_quote(value: &str) -> String {
-        let mut quoted = String::with_capacity(value.len() + 2);
-        quoted.push('"');
-        for character in value.chars() {
-            match character {
-                '\\' => quoted.push_str("\\\\"),
-                '"' => quoted.push_str("\\\""),
-                _ => quoted.push(character),
-            }
-        }
-        quoted.push('"');
-        quoted
-    }
-
-    /// Build the shell command that starts the sibling daemon.
-    ///
-    /// The daemon runs as root because creating `utun` needs it, but the GUI
-    /// and CLI run as the installing user. Point the daemon at that user's
-    /// config directory and, once the socket exists, give the directory and
-    /// socket back to the user so the GUI can connect.
-    fn command_line(executable: &Path, args: &[&str]) -> String {
-        let config_dir = aevan_core::paths::config_dir().ok();
-        let mut command = String::new();
-        if let Some(dir) = config_dir.as_deref() {
-            command.push_str("AEVAN_CONFIG_DIR=");
-            command.push_str(&posix_quote(dir.as_os_str()));
-            command.push(' ');
-        }
-        command.push_str("/usr/bin/nohup ");
-        command.push_str(&posix_quote(executable.as_os_str()));
-        for argument in args {
-            command.push(' ');
-            command.push_str(&posix_quote(OsStr::new(argument)));
-        }
-        command.push_str(" </dev/null >/dev/null 2>&1 &");
-
-        if let (Some(dir), Some(home)) = (config_dir.as_deref(), std::env::var_os("HOME")) {
-            if let Ok(metadata) = std::fs::metadata(home) {
-                let socket = dir.join("aevan.sock");
-                command.push_str(&format!(
-                    " i=0; while [ $i -lt 50 ] && [ ! -S {} ]; do i=$((i+1)); /bin/sleep 0.1; done; /usr/bin/chown {} {} {} 2>/dev/null || true",
-                    posix_quote(socket.as_os_str()),
-                    metadata.uid(),
-                    posix_quote(dir.as_os_str()),
-                    posix_quote(socket.as_os_str()),
-                ));
-            }
-        }
-        command
-    }
-
-    pub fn start_elevated(executable: &Path, args: &[&str]) -> StartOutcome {
-        run_script_elevated_captured(&command_line(executable, args)).outcome
-    }
-
-    pub fn run_script_elevated_captured(command: &str) -> ScriptOutcome {
-        let script = format!(
-            "do shell script {} with administrator privileges",
-            apple_script_quote(command)
-        );
-
-        let output = match Command::new("/usr/bin/osascript")
-            .arg("-e")
-            .arg(&script)
-            .output()
-        {
-            Ok(output) => output,
-            Err(error) => {
-                let stderr = format!("could not run osascript: {error}");
-                return ScriptOutcome {
-                    command: command.to_owned(),
-                    outcome: StartOutcome::Failed(stderr.clone()),
-                    exit_status: None,
-                    stderr,
-                };
-            }
-        };
-        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-        let exit_status = output.status.code();
-        let outcome = if output.status.success() {
-            StartOutcome::Started
-        } else {
-            let lowered = stderr.to_ascii_lowercase();
-            if lowered.contains("user canceled")
-                || lowered.contains("user cancelled")
-                || stderr.contains("(-128)")
-            {
-                StartOutcome::Cancelled
-            } else {
-                let detail = stderr.trim();
-                if detail.is_empty() {
-                    StartOutcome::Failed(
-                        "macOS refused the administrator command without a reason".into(),
-                    )
-                } else {
-                    StartOutcome::Failed(format!(
-                        "macOS refused the administrator command: {detail}"
-                    ))
-                }
-            }
-        };
-        ScriptOutcome {
-            command: command.to_owned(),
-            outcome,
-            exit_status,
-            stderr,
-        }
+    pub fn start_elevated(executable: &Path, _args: &[&str]) -> StartOutcome {
+        StartOutcome::Failed(format!(
+            "starting {} with administrator privileges is not part of the macOS CLI; launch Aevan once so ServiceManagement can register the bundled LaunchDaemon",
+            executable.display()
+        ))
     }
 
     pub fn spawn_detached(executable: &Path) -> std::io::Result<()> {
@@ -362,11 +201,11 @@ mod imp {
 mod imp {
     use std::path::Path;
 
-    use super::{ScriptOutcome, StartOutcome};
+    use super::StartOutcome;
 
     pub fn start_elevated(executable: &Path, _args: &[&str]) -> StartOutcome {
         StartOutcome::Failed(format!(
-            "starting {} with Administrator is only implemented on Windows and macOS; start aevand with sudo",
+            "starting {} with Administrator is only implemented on Windows; start aevand with sudo",
             executable.display()
         ))
     }
@@ -378,16 +217,5 @@ mod imp {
             .stderr(std::process::Stdio::null())
             .spawn()
             .map(|_child| ())
-    }
-
-    pub fn run_script_elevated_captured(_script: &str) -> ScriptOutcome {
-        ScriptOutcome {
-            command: String::new(),
-            outcome: StartOutcome::Failed(
-                "administrator shell scripts are only implemented on macOS".into(),
-            ),
-            exit_status: None,
-            stderr: String::new(),
-        }
     }
 }

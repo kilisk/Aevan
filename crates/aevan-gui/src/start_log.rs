@@ -1,14 +1,13 @@
 //! The macOS daemon-start log.
 //!
-//! Every elevated or prompted daemon start records the exact command, its exit
-//! status and its stderr in `$HOME/Library/Logs/Aevan/daemon-start.log`. The
-//! file is owner-only (0600) inside an owner-only directory (0700), so a failed
-//! start names itself in the GUI banner without exposing anything to other
-//! users.
+//! Every daemon start attempt records the operation, its exit status and any
+//! error text in `$HOME/Library/Logs/Aevan/daemon-start.log`. The file is
+//! owner-only (0600) inside an owner-only directory (0700), so a failed start
+//! names itself in the GUI banner without exposing anything to other users.
 //!
-//! Only a command, an exit status and captured stderr are written. Credentials
-//! and the tunnel key block are never part of a daemon-start command, and this
-//! module has no way to receive them.
+//! Only an operation name, an exit status and captured error text are written.
+//! Credentials and the tunnel key block are never part of a daemon start, and
+//! this module has no way to receive them.
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
