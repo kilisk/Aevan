@@ -461,6 +461,27 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_read_only_directory_is_reported_without_the_secret() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = TempDir::new("read-only");
+        let directory = temp.path().join("read-only");
+        std::fs::create_dir_all(&directory).expect("create directory");
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o500))
+            .expect("make read-only");
+
+        let mut store = FileStore::new(directory.join("secrets.json"));
+        let result = save_totp_secret_into(&mut store, enrolment(), 0);
+
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))
+            .expect("restore permissions");
+        let error = result.expect_err("a read-only directory cannot store the secret");
+        assert!(error.contains("secrets.json"), "{error}");
+        assert!(!error.contains("JBSWY3DPEHPK3PXP"), "{error}");
+    }
+
     #[test]
     fn saving_the_same_profile_twice_replaces_the_secret() {
         let temp = TempDir::new("replace");
