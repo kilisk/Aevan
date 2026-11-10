@@ -160,12 +160,24 @@ Desktop notifications are shown for three transitions only:
 * failed — includes the daemon's already-redacted failure reason;
 * recovery incomplete — includes the number of failed teardown steps.
 
-Notifications are emitted through a small `Notifier` trait; the production
-implementation uses `notify-rust` (Windows toast backend) and tests use a
-recording implementation. Notification text is built only from the state name,
-the tunnel address and the redacted reason, so it can never contain a password,
-one-time token or TOTP secret. A missing notification service is not fatal: the
-tray tooltip always carries the current state.
+Notifications are emitted through a small `Notifier` trait; tests use a
+recording implementation. Windows and Linux use `notify-rust`; the production
+macOS path deliberately does **not** link `notify-rust`/`mac-notification-sys`,
+because that stack runs AppleScript in-process and a malformed script can abort
+the whole GUI. macOS instead spawns `/usr/bin/osascript` as a child process, so a
+refused notification cannot take the app down.
+
+The macOS script is built by a pure quoting function: double quotes and
+backslashes are escaped and every control character (newline, carriage return,
+tab) becomes a space. Values such as `use default`, backticks and semicolons are
+inert literal data, and unit tests parse the generated script to prove it
+contains exactly the title and body literals. Notification text is built only
+from the state name, the tunnel address and the redacted reason, so it can never
+contain a password, one-time token or TOTP secret. A missing notification
+service is logged and ignored: the tray tooltip always carries the current
+state. Message handlers, notification delivery and tray callbacks run under
+`std::panic::catch_unwind`; a caught panic becomes a banner instead of aborting
+the UI (the workspace keeps `panic = "unwind"`).
 
 On an unpackaged Windows build the toast is shown through the built-in
 PowerShell app identity; a dedicated app identity is part of M5 packaging. No
@@ -393,8 +405,8 @@ directories, so the enable/disable/state cycle runs offline on every build host.
 * No profile creation/editing/removal; use `aevan profile add`.
 * No log streaming. The GUI only reads the tail of its own owner-only
   `daemon-start.log` to name a failed daemon start.
-* No tray on Linux (see above). macOS has a menu-bar item; notifications still
-  use the cross-platform `notify-rust` path.
+* No tray on Linux (see above). macOS has a menu-bar item and delivers
+  notifications through a child `osascript`, never in-process AppleScript.
 * No password persistence; a TOTP secret is stored only in the owner-only
   secret store (Credential Manager on Windows, a 0600 file on macOS/Linux).
 * No service installation. The Settings switch does not install a service; it

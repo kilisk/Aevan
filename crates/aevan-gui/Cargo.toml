@@ -24,13 +24,18 @@ aevan-daemon = { workspace = true }
 aevan-instance = { workspace = true }
 aevan-proto = { workspace = true }
 aevan-secrets = { workspace = true }
-notify-rust = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 zeroize = { workspace = true }
+
+# Windows and Linux use the cross-platform notification backend. macOS
+# deliberately does not link `notify-rust`/`mac-notification-sys`: that stack
+# runs AppleScript in-process, so the GUI uses a child `osascript` instead.
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+notify-rust = { workspace = true }
 
 # Windows: `tao` pumps the hidden tray window's Win32 messages on the tray
 # thread; `tray-icon` provides the icon and menu. Linux stays tray-free (no GTK
