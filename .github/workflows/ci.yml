@@ -277,6 +277,8 @@ jobs:
           "$app/Contents/MacOS/aevan-gui" --version
           test -x "$app/Contents/MacOS/aevand"
           "$app/Contents/MacOS/aevand" --version
+          test -x "$app/Contents/MacOS/aevan"
+          "$app/Contents/MacOS/aevan" --version
           test -L "$mountpoint/Applications"
           echo "Applications symlink: $(readlink "$mountpoint/Applications")"
           test "$(readlink "$mountpoint/Applications")" = "/Applications"
