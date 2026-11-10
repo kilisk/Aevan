@@ -427,7 +427,7 @@ every build host; the Windows task path keeps its existing `schtasks` tests.
   control `status` document exposes a count, not the route list.
 * **Log level:** shown and cycled in memory, but not yet sent anywhere; there is
   no log viewer in M4.
-* **Rendering:** `iced` 0.13 with the `wgpu` renderer. A machine without a
+* **Rendering:** `iced` 0.14 with the `wgpu` 27 renderer. A machine without a
   working GPU/software adapter is out of scope for this milestone.
 
 ## Offline tests
