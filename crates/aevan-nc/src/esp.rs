@@ -2844,10 +2844,14 @@ mod tests {
     struct FakeDevice {
         outbound: VecDeque<Vec<u8>>,
         inbound: Vec<Vec<u8>>,
+        fail_next: Option<io::ErrorKind>,
     }
 
     impl EspDevice for FakeDevice {
         fn recv(&mut self, buffer: &mut [u8]) -> io::Result<Option<usize>> {
+            if let Some(kind) = self.fail_next.take() {
+                return Err(io::Error::from(kind));
+            }
             match self.outbound.pop_front() {
                 Some(packet) if packet.len() <= buffer.len() => {
                     buffer[..packet.len()].copy_from_slice(&packet);
@@ -3920,10 +3924,12 @@ mod tests {
 
     struct RecordingUdp {
         recv_calls: usize,
+        sent_calls: usize,
     }
 
     impl EspUdp for RecordingUdp {
         fn send(&mut self, packet: &[u8]) -> io::Result<usize> {
+            self.sent_calls += 1;
             Ok(packet.len())
         }
 
@@ -3956,6 +3962,65 @@ mod tests {
     }
 
     #[test]
+    fn a_queued_device_packet_is_drained_when_udp_would_block() {
+        let (_gateway_keys, _client_keys, material) = session_material();
+        let now = Instant::now();
+        let mut session = new_session(material, now);
+        let mut udp = RecordingUdp {
+            recv_calls: 0,
+            sent_calls: 0,
+        };
+        let mut device = FakeDevice::default();
+        device.outbound.push_back(ipv4_packet(0x5a));
+
+        let report = session
+            .poll_once_observed(
+                &mut udp,
+                &mut device,
+                now,
+                EspReadiness {
+                    udp: false,
+                    device: true,
+                },
+            )
+            .expect("device drain");
+
+        assert_eq!(udp.recv_calls, 1, "the socket is probed once");
+        assert_eq!(udp.sent_calls, 1, "the queued packet is sent");
+        assert_eq!(report.device_packets, 1);
+        assert!(report.worked);
+        assert!(device.outbound.is_empty(), "the device queue is drained");
+    }
+
+    #[test]
+    fn a_transient_device_read_error_does_not_end_the_poll() {
+        let (_gateway_keys, _client_keys, material) = session_material();
+        let now = Instant::now();
+        let mut session = new_session(material, now);
+        let mut udp = FakeUdp::silent(
+            keys(EspEncryption::Aes128Cbc, EspAuthentication::HmacSha1, 0x10),
+            0x3333_4444,
+            keys(EspEncryption::Aes128Cbc, EspAuthentication::HmacSha1, 0x20),
+        );
+        let mut device = FakeDevice {
+            fail_next: Some(io::ErrorKind::ConnectionReset),
+            ..FakeDevice::default()
+        };
+        device.outbound.push_back(ipv4_packet(0x5b));
+
+        let report = session
+            .poll_once_observed(&mut udp, &mut device, now, EspReadiness::default())
+            .expect("a transient device error keeps the loop alive");
+        assert_eq!(report.device_error, Some(io::ErrorKind::ConnectionReset));
+        assert_eq!(device.outbound.len(), 1);
+
+        assert!(session
+            .poll_once(&mut udp, &mut device, now + Duration::from_millis(1))
+            .expect("the next poll drains the packet"));
+        assert!(device.outbound.is_empty());
+    }
+
+    #[test]
     fn a_poll_stops_at_the_batch_cap_and_finishes_next_time() {
         let (gateway_keys, client_keys, material) = session_material();
         let now = Instant::now();
@@ -3984,7 +4049,10 @@ mod tests {
         let (_gateway_keys, _client_keys, material) = session_material();
         let now = Instant::now();
         let mut session = new_session(material, now);
-        let mut udp = RecordingUdp { recv_calls: 0 };
+        let mut udp = RecordingUdp {
+            recv_calls: 0,
+            sent_calls: 0,
+        };
         let mut device = FakeDevice::default();
 
         let started = Instant::now();
