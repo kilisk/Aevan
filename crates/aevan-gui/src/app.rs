@@ -53,12 +53,15 @@ pub enum Message {
     SettingsForProfile(String),
     BeginAddProfile,
     BeginEditProfile(String),
+    BeginDeleteProfile(String),
     AddProfileName(String),
     AddProfileUrl(String),
     AddProfileRealm(String),
     AddProfileUsername(String),
     SaveProfile,
     CancelAddProfile,
+    ConfirmDeleteProfile,
+    CancelDeleteProfile,
     Back,
     Username(String),
     Password(SecretField),
@@ -263,6 +266,8 @@ impl App {
             Message::Dismiss => {
                 if self.vm.quit_confirmation.is_some() {
                     self.vm.cancel_quit();
+                } else if self.vm.delete_confirmation.is_some() {
+                    self.vm.cancel_delete_profile();
                 } else {
                     let message = match self.vm.screen {
                         Screen::Connect | Screen::Settings | Screen::Connected => Message::Back,
@@ -317,6 +322,9 @@ impl App {
             }
             Message::BeginAddProfile => self.vm.begin_add_profile(),
             Message::BeginEditProfile(name) => self.vm.begin_edit_profile(&name),
+            Message::BeginDeleteProfile(name) => {
+                self.vm.request_delete_profile(&name);
+            }
             Message::AddProfileName(value) => self.vm.set_add_profile_name(value),
             Message::AddProfileUrl(value) => self.vm.set_add_profile_url(value),
             Message::AddProfileRealm(value) => self.vm.set_add_profile_realm(value),
@@ -336,6 +344,27 @@ impl App {
                     Err(error) => self.vm.add_profile_error = Some(error.to_string()),
                 }
             }
+            Message::ConfirmDeleteProfile => {
+                let loaded = ProfileStore::default_path()
+                    .and_then(|path| ProfileStore::load(&path).map(|store| (path, store)));
+                match loaded {
+                    Ok((path, mut store)) => {
+                        match self.vm.confirm_delete_profile(&mut store, now_unix()) {
+                            Ok(_) => {
+                                if let Err(error) = store.save(&path) {
+                                    self.vm.apply_profile_store_error("delete", error);
+                                }
+                                if let Some(profile) = self.vm.selected.clone() {
+                                    return load_totp_task(profile);
+                                }
+                            }
+                            Err(message) => self.vm.notice = Some(message),
+                        }
+                    }
+                    Err(error) => self.vm.notice = Some(error.to_string()),
+                }
+            }
+            Message::CancelDeleteProfile => self.vm.cancel_delete_profile(),
             Message::Back => {
                 let screen = if self.vm.state == ConnectionState::Connected {
                     Screen::Connected
@@ -608,12 +637,38 @@ impl App {
             .style(error_card)
         });
 
+        let delete_confirmation = self.vm.delete_confirmation_label().map(|message| {
+            container(
+                column![
+                    text(message).size(16).color(DANGER),
+                    row![
+                        button(text("Delete").size(14))
+                            .on_press(Message::ConfirmDeleteProfile)
+                            .style(button::danger)
+                            .padding([6, 14]),
+                        button(text("Cancel").size(14))
+                            .on_press(Message::CancelDeleteProfile)
+                            .style(button::secondary)
+                            .padding([6, 14]),
+                    ]
+                    .spacing(8),
+                ]
+                .spacing(6),
+            )
+            .padding(12)
+            .width(Length::Fill)
+            .style(error_card)
+        });
+
         let mut body = column![header].spacing(16).width(Length::Fill);
         if let Some(banner) = banner {
             body = body.push(banner);
         }
         if let Some(quit_confirmation) = quit_confirmation {
             body = body.push(quit_confirmation);
+        }
+        if let Some(delete_confirmation) = delete_confirmation {
+            body = body.push(delete_confirmation);
         }
         body = body.push(scrollable(content).height(Length::Fill));
 
@@ -659,10 +714,16 @@ impl App {
             .spacing(3)
             .width(Length::Fill);
 
-            let management = row![button(text("Edit").size(14))
-                .on_press(Message::BeginEditProfile(profile.name.clone()))
-                .style(button::secondary)
-                .padding([6, 14])]
+            let management = row![
+                button(text("Edit").size(14))
+                    .on_press(Message::BeginEditProfile(profile.name.clone()))
+                    .style(button::secondary)
+                    .padding([6, 14]),
+                button(text("Delete").size(14))
+                    .on_press(Message::BeginDeleteProfile(profile.name.clone()))
+                    .style(button::danger)
+                    .padding([6, 14]),
+            ]
             .spacing(8);
 
             let actions = if connected {
