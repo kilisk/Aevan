@@ -835,6 +835,30 @@ pub trait EspDevice {
     }
 }
 
+/// Which handles the live loop last saw as readable.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EspReadiness {
+    /// The UDP socket reported readable.
+    pub udp: bool,
+    /// The tunnel device reported readable.
+    pub device: bool,
+}
+
+/// What one [`EspSession::poll_once_observed`] step actually did.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PollReport {
+    /// Any packet, keepalive, rekey or timer action happened.
+    pub worked: bool,
+    /// Datagrams received from UDP in this step.
+    pub udp_packets: usize,
+    /// Inner packets read from the device in this step.
+    pub device_packets: usize,
+    /// The most recent device read error, when the device returned one.
+    pub device_error: Option<io::ErrorKind>,
+    /// Whether the device drain was enabled for this step.
+    pub device_enabled: bool,
+}
+
 /// A connected UDP socket for ESP.
 ///
 /// The socket binds the wildcard address in the peer's family and lets the OS
@@ -1122,6 +1146,8 @@ pub struct EspSession {
     device_buffer: Vec<u8>,
     plaintext_buffer: Vec<u8>,
     encrypt_buffer: Vec<u8>,
+    poll_iterations: u64,
+    device_polling: bool,
 }
 
 impl fmt::Debug for EspSession {
@@ -1188,7 +1214,17 @@ impl EspSession {
             device_buffer: vec![0u8; device_capacity],
             plaintext_buffer: vec![0u8; ESP_MAX_DATAGRAM],
             encrypt_buffer: vec![0u8; wire_capacity],
+            poll_iterations: 0,
+            device_polling: true,
         }
+    }
+
+    /// Enable or disable reading packets from the tunnel device.
+    ///
+    /// The live loop disables this only after a watchdog proves that readiness
+    /// reports no longer correspond to readable packets.
+    pub fn set_device_polling(&mut self, enabled: bool) {
+        self.device_polling = enabled;
     }
 
     /// Attach the retained oNCP control channel used to send a rekey KMP 302.
@@ -1246,6 +1282,26 @@ impl EspSession {
         device: &mut D,
         now: Instant,
     ) -> Result<bool, EspSessionError> {
+        Ok(self
+            .poll_once_observed(udp, device, now, EspReadiness::default())?
+            .worked)
+    }
+
+    /// Like [`Self::poll_once`], but records what the step did and what the
+    /// caller last saw as readable.
+    ///
+    /// The live loop uses the report for its trace instrumentation and for the
+    /// device watchdog. The observation does not change packet handling.
+    pub fn poll_once_observed<U: EspUdp, D: EspDevice>(
+        &mut self,
+        udp: &mut U,
+        device: &mut D,
+        now: Instant,
+        readiness: EspReadiness,
+    ) -> Result<PollReport, EspSessionError> {
+        let iteration = self.poll_iterations;
+        self.poll_iterations = self.poll_iterations.saturating_add(1);
+
         if now.duration_since(self.last_received) >= self.peer_timeout {
             return Err(EspSessionError::PeerUnresponsive(self.peer_timeout));
         }
@@ -1272,27 +1328,36 @@ impl EspSession {
         // UDP batch. A stalled or erroring socket read must never prevent the
         // tunnel device from being drained.
         let mut sent = 0usize;
-        loop {
-            let mut buffer = std::mem::take(&mut self.device_buffer);
-            let result = device.recv(&mut buffer);
-            match result {
-                Ok(None) | Ok(Some(0)) => {
-                    self.device_buffer = buffer;
-                    break;
-                }
-                Ok(Some(length)) => {
-                    let outcome = self.send_device_packet(&buffer[..length], udp);
-                    self.device_buffer = buffer;
-                    outcome?;
-                    worked = true;
-                    sent += 1;
-                    if sent >= ESP_BATCH_MAX {
+        let device_error = None;
+        if self.device_polling {
+            loop {
+                let mut buffer = std::mem::take(&mut self.device_buffer);
+                let result = device.recv(&mut buffer);
+                match result {
+                    Ok(None) | Ok(Some(0)) => {
+                        self.device_buffer = buffer;
                         break;
                     }
-                }
-                Err(error) => {
-                    self.device_buffer = buffer;
-                    return Err(EspSessionError::Device(error.to_string()));
+                    Ok(Some(length)) => {
+                        let outcome = self.send_device_packet(&buffer[..length], udp);
+                        self.device_buffer = buffer;
+                        outcome?;
+                        worked = true;
+                        sent += 1;
+                        if sent >= ESP_BATCH_MAX {
+                            break;
+                        }
+                    }
+                    Err(error) => {
+                        self.device_buffer = buffer;
+                        tracing::warn!(
+                            fd = ?device.wait_handle(),
+                            kind = ?error.kind(),
+                            %error,
+                            "ESP device read failed; keeping the loop alive"
+                        );
+                        return Err(EspSessionError::Device(error.to_string()));
+                    }
                 }
             }
         }
@@ -1355,7 +1420,24 @@ impl EspSession {
             worked = true;
         }
 
-        Ok(worked)
+        let report = PollReport {
+            worked,
+            udp_packets: received,
+            device_packets: sent,
+            device_error,
+            device_enabled: self.device_polling,
+        };
+        tracing::trace!(
+            iteration,
+            udp_readable = readiness.udp,
+            device_readable = readiness.device,
+            udp_packets = report.udp_packets,
+            device_packets = report.device_packets,
+            device_enabled = report.device_enabled,
+            worked = report.worked,
+            "ESP poll iteration"
+        );
+        Ok(report)
     }
 
     /// Encrypt one device packet into the reusable send buffer and hand it to

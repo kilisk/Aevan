@@ -19,8 +19,8 @@ use serde::Serialize;
 use aevan_core::{AevanError, AevanResult, Profile};
 use aevan_nc::{
     client_config_reply, decode_attributes, esp_negotiation, handshake_live_session, EspKeys,
-    EspLocalKeys, EspSession, EspSessionConfig, EspSessionError, EspSessionMaterial, EspUdp,
-    HandshakeAttempt, KmpMessageOwned, NcpConfig, RekeyPolicy, UdpEspTransport, KMP_CONFIG,
+    EspLocalKeys, EspReadiness, EspSession, EspSessionConfig, EspSessionError, EspSessionMaterial,
+    EspUdp, HandshakeAttempt, KmpMessageOwned, NcpConfig, RekeyPolicy, UdpEspTransport, KMP_CONFIG,
 };
 use aevan_proto::Url;
 use aevan_tun::apply;
@@ -336,21 +336,36 @@ where
         udp: udp.wait_handle(),
         device: device.wait_handle(),
     };
+    tracing::debug!(
+        device_fd = ?sources.device,
+        udp_fd = ?sources.udp,
+        "ESP loop starting"
+    );
 
+    let mut readiness = EspReadiness::default();
     loop {
         if control.should_stop() {
             return Ok(());
         }
-        let worked = session.poll_once(udp, device, Instant::now())?;
+        let report = session.poll_once_observed(udp, device, Instant::now(), readiness)?;
+        readiness = EspReadiness::default();
         control.stats(session.bytes_received(), session.bytes_sent());
-        if !worked {
+        if !report.worked {
             // Nothing was ready. Wait for either the socket or the device, with
             // a bounded timeout so keepalives, rekey timers and the stop flag
             // are still serviced.
             if sources.udp.is_some() || sources.device.is_some() {
-                if let Err(error) = platform::wait_readable(sources, ESP_IDLE_TIMEOUT) {
-                    tracing::debug!(%error, "ESP readiness wait failed; using a bounded sleep");
-                    std::thread::sleep(ESP_IDLE_TIMEOUT);
+                match platform::wait_readable(sources, ESP_IDLE_TIMEOUT) {
+                    Ok(observed) => {
+                        readiness = EspReadiness {
+                            udp: observed.udp,
+                            device: observed.device,
+                        };
+                    }
+                    Err(error) => {
+                        tracing::debug!(%error, "ESP readiness wait failed; using a bounded sleep");
+                        std::thread::sleep(ESP_IDLE_TIMEOUT);
+                    }
                 }
             } else {
                 std::thread::sleep(ESP_IDLE_TIMEOUT);

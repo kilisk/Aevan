@@ -37,10 +37,11 @@ pub use auth::{
 };
 pub use esp::{
     decrypt_packet, encrypt_packet, encrypt_packet_into, keepalive_packet, peek_sequence, peek_spi,
-    DecryptedPacket, DecryptedPacketView, EspDevice, EspError, EspKeys, EspSession,
+    DecryptedPacket, DecryptedPacketView, EspDevice, EspError, EspKeys, EspReadiness, EspSession,
     EspSessionConfig, EspSessionError, EspSessionMaterial, EspUdp, InboundSa, KeepaliveState,
-    KmpChannel, OutboundSa, ReceivedKmp, RekeyPolicy, RekeyReason, UdpEspTransport, ESP_BATCH_MAX,
-    ESP_HEADER_LEN, ESP_IV_LEN, NEXT_HEADER_IPV4, NEXT_HEADER_IPV6, NEXT_HEADER_LZO_IPV4,
+    KmpChannel, OutboundSa, PollReport, ReceivedKmp, RekeyPolicy, RekeyReason, UdpEspTransport,
+    ESP_BATCH_MAX, ESP_HEADER_LEN, ESP_IV_LEN, NEXT_HEADER_IPV4, NEXT_HEADER_IPV6,
+    NEXT_HEADER_LZO_IPV4,
 };
 pub use login::{
     complete_continuation, ContinuationChallenge, ContinuationError, ContinuationExchange,
