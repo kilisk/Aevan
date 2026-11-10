@@ -833,6 +833,20 @@ pub trait EspDevice {
     fn wait_handle(&self) -> Option<isize> {
         None
     }
+
+    /// The OS descriptor behind a channel-backed device.
+    ///
+    /// On Unix the descriptor is owned by a reader thread and is deliberately
+    /// not polled by the ESP loop. It is exposed only for diagnostics such as
+    /// the channel watchdog.
+    fn device_fd(&self) -> Option<isize> {
+        self.wait_handle()
+    }
+
+    /// The interface name the OS assigned, for diagnostics.
+    fn interface_name(&self) -> Option<&str> {
+        None
+    }
 }
 
 /// Which handles the live loop last saw as readable.
