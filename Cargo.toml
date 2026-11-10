@@ -18,7 +18,7 @@ cbc = "0.1"
 cipher = "0.4"
 clap = { version = "4.5", features = ["derive"] }
 hmac = "0.12"
-iced = { version = "0.13", default-features = false, features = ["wgpu", "tokio"] }
+iced = { version = "0.14", default-features = false, features = ["wgpu", "tokio", "x11", "wayland"] }
 md-5 = "0.10"
 aevan-core = { path = "crates/aevan-core" }
 aevan-daemon = { path = "crates/aevan-daemon" }
