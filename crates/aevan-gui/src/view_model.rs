@@ -759,6 +759,9 @@ pub struct ViewModel {
     /// Base32 secret typed into the enrol form; zeroized and never displayed
     /// once saved.
     pub totp_input: Zeroizing<String>,
+    /// A TOTP backend failure (read, write, corrupt document) shown inside the
+    /// Settings sheet. It never contains secret material.
+    pub totp_error: Option<String>,
     /// Decoded secret awaiting an explicit save.
     pending_totp: Option<Zeroizing<Vec<u8>>>,
     /// Normalized base32 text awaiting an explicit save.
@@ -835,6 +838,7 @@ impl ViewModel {
             add_profile_errors: ProfileDraftErrors::default(),
             add_profile_error: None,
             totp_input: Zeroizing::new(String::new()),
+            totp_error: None,
             pending_totp: None,
             pending_totp_text: None,
             pending_totp_profile: None,
@@ -882,6 +886,7 @@ impl ViewModel {
     pub fn set_screen(&mut self, screen: Screen) {
         if self.screen != screen {
             self.focus = None;
+            self.totp_error = None;
         }
         self.screen = screen;
     }
@@ -1146,7 +1151,13 @@ impl ViewModel {
         }
         if self.selected.as_deref() == Some(profile) {
             self.totp_secret = secret.map(Zeroizing::new);
+            self.totp_error = None;
         }
+    }
+
+    /// Record a TOTP read/write failure for display inside the Settings sheet.
+    pub fn apply_totp_error(&mut self, message: impl Into<String>) {
+        self.totp_error = Some(message.into());
     }
 
     /// Seconds until the current TOTP code expires, when one is enrolled.
@@ -1256,6 +1267,7 @@ impl ViewModel {
     pub fn apply_totp_saved(&mut self, profile: &str, decoded: Vec<u8>) {
         self.set_totp_secret(profile, Some(decoded));
         self.clear_totp_entry();
+        self.totp_error = None;
         self.notice = Some("TOTP secret saved to the secret store.".to_owned());
     }
 
@@ -1263,6 +1275,7 @@ impl ViewModel {
     pub fn apply_totp_removed(&mut self, profile: &str) {
         self.set_totp_secret(profile, None);
         self.clear_totp_entry();
+        self.totp_error = None;
         self.notice = Some("TOTP secret removed from the secret store.".to_owned());
     }
 
@@ -2414,6 +2427,32 @@ mod tests {
         assert!(vm.totp_countdown().is_some());
         assert!(vm.selected_profile().expect("profile").totp_enrolled);
         assert!(vm.totp_input.is_empty());
+    }
+
+    #[test]
+    fn a_totp_backend_error_is_shown_and_cleared_by_a_successful_save() {
+        let mut vm = model();
+        vm.select_for_settings("example", 0);
+
+        vm.apply_totp_error(
+            "cannot access the secret store at /read-only/secrets.json: read-only file system",
+        );
+        let shown = vm.totp_error.as_deref().expect("the sheet shows the error");
+        assert!(shown.contains("read-only"), "{shown}");
+        assert!(vm.generated_token().is_none());
+
+        vm.apply_totp_saved("example", b"JBSWY3DPEHPK3PXP".to_vec());
+        assert!(vm.totp_error.is_none());
+        assert!(vm.generated_token().is_some());
+    }
+
+    #[test]
+    fn changing_screens_clears_a_previous_totp_error() {
+        let mut vm = model();
+        vm.select_for_settings("example", 0);
+        vm.apply_totp_error("permission denied");
+        vm.set_screen(Screen::Profiles);
+        assert!(vm.totp_error.is_none());
     }
 
     #[test]

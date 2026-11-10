@@ -149,8 +149,10 @@ fn headless(json: bool) -> ExitCode {
 
     let mut vm = ViewModel::new(&store, daemon_bridge::endpoint(), now);
     if let Some(profile) = vm.selected.clone() {
-        let secret = daemon_bridge::totp_secret(&profile);
-        vm.set_totp_secret(&profile, secret);
+        match daemon_bridge::totp_secret(&profile) {
+            Ok(secret) => vm.set_totp_secret(&profile, secret),
+            Err(error) => vm.apply_totp_error(error),
+        }
     }
     match daemon_bridge::status() {
         Ok((status, endpoint)) => {

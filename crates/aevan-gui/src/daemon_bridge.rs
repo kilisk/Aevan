@@ -82,17 +82,21 @@ pub fn recover() -> Result<StatusReport, ClientError> {
 
 /// Read and decode the TOTP secret for a profile from the owner's secret store.
 ///
-/// A missing entry and an unavailable backend both mean "no TOTP enrolled".
-/// Reading never spawns a process, opens a URL or asks for elevation. This
-/// function never logs or returns the encoded secret.
-pub fn totp_secret(profile: &str) -> Option<Vec<u8>> {
+/// `Ok(None)` means "no TOTP enrolled". A backend or decode failure is returned
+/// so the Settings sheet can show it instead of silently treating it as "not
+/// enrolled". Reading never spawns a process, opens a URL or asks for
+/// elevation. This function never logs or returns the encoded secret.
+pub fn totp_secret(profile: &str) -> Result<Option<Vec<u8>>, String> {
     use aevan_secrets::decode_base32;
 
-    let store = open_totp_store().ok()?;
+    let store = open_totp_store()?;
     let account = totp_account(profile);
     match store.get(KEYRING_SERVICE, &account) {
-        Ok(Some(secret)) => decode_base32(secret.expose()).ok(),
-        _ => None,
+        Ok(Some(secret)) => decode_base32(secret.expose())
+            .map(Some)
+            .map_err(|_| "the stored TOTP secret is not valid base32".to_owned()),
+        Ok(None) => Ok(None),
+        Err(error) => Err(error.to_string()),
     }
 }
 

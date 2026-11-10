@@ -46,7 +46,7 @@ pub enum Message {
     SelectProfile(String),
     TotpLoaded {
         profile: String,
-        secret: Option<Vec<u8>>,
+        result: Result<Option<Vec<u8>>, String>,
     },
     ShowProfiles,
     ShowSettings,
@@ -225,9 +225,12 @@ impl App {
                     return load_totp_task(name);
                 }
             }
-            Message::TotpLoaded { profile, secret } => {
-                self.vm.set_totp_secret(&profile, secret);
-            }
+            Message::TotpLoaded { profile, result } => match result {
+                Ok(secret) => self.vm.set_totp_secret(&profile, secret),
+                Err(message) => self.vm.apply_totp_error(format!(
+                    "could not read the TOTP secret from the secret store: {message}"
+                )),
+            },
             Message::ShowProfiles => {
                 self.vm.set_screen(Screen::Profiles);
                 self.vm.notice = None;
@@ -354,7 +357,8 @@ impl App {
             } => match result {
                 Ok(()) => self.vm.apply_totp_saved(&profile, secret.into_inner()),
                 Err(message) => {
-                    self.vm.notice = Some(format!("could not save the TOTP secret: {message}"));
+                    self.vm
+                        .apply_totp_error(format!("could not save the TOTP secret: {message}"));
                 }
             },
             Message::TotpRemove => match self.vm.selected.clone() {
@@ -364,7 +368,8 @@ impl App {
             Message::TotpRemoved { profile, result } => match result {
                 Ok(()) => self.vm.apply_totp_removed(&profile),
                 Err(message) => {
-                    self.vm.notice = Some(format!("could not remove the TOTP secret: {message}"));
+                    self.vm
+                        .apply_totp_error(format!("could not remove the TOTP secret: {message}"));
                 }
             },
             Message::Tray(TrayEvent::ShowWindow) => return focus_window(),
@@ -1033,6 +1038,9 @@ impl App {
 
         if let Some(enrolled) = enrolled {
             view = view.push(text("TOTP enrolment").size(17));
+            if let Some(error) = &self.vm.totp_error {
+                view = view.push(text(error.clone()).size(12).color(DANGER));
+            }
             if enrolled {
                 view = view.push(
                     text(
@@ -1242,13 +1250,12 @@ fn load_totp_task(profile: String) -> Task<Message> {
     Task::perform(
         async move {
             let requested = profile.clone();
-            let secret = tokio::task::spawn_blocking(move || daemon_bridge::totp_secret(&profile))
+            let result = tokio::task::spawn_blocking(move || daemon_bridge::totp_secret(&profile))
                 .await
-                .ok()
-                .flatten();
-            (requested, secret)
+                .unwrap_or_else(|error| Err(format!("the secret-store worker stopped: {error}")));
+            (requested, result)
         },
-        |(profile, secret)| Message::TotpLoaded { profile, secret },
+        |(profile, result)| Message::TotpLoaded { profile, result },
     )
 }
 
@@ -1517,6 +1524,16 @@ mod tests {
     fn failing_handlers_set_a_banner_instead_of_panicking() {
         let mut app = app();
 
+        let _ = app.update(Message::TotpLoaded {
+            profile: "example".into(),
+            result: Err("permission denied".into()),
+        });
+        assert!(app
+            .vm
+            .totp_error
+            .as_deref()
+            .is_some_and(|error| error.contains("could not read")));
+
         let _ = app.update(Message::TotpSaved {
             profile: "example".into(),
             secret: DecodedTotpSecret::new(Vec::new()),
@@ -1524,9 +1541,9 @@ mod tests {
         });
         assert!(app
             .vm
-            .notice
+            .totp_error
             .as_deref()
-            .is_some_and(|notice| notice.contains("could not save")));
+            .is_some_and(|error| error.contains("could not save")));
 
         let _ = app.update(Message::TotpRemoved {
             profile: "example".into(),
@@ -1534,9 +1551,9 @@ mod tests {
         });
         assert!(app
             .vm
-            .notice
+            .totp_error
             .as_deref()
-            .is_some_and(|notice| notice.contains("could not remove")));
+            .is_some_and(|error| error.contains("could not remove")));
 
         let _ = app.update(Message::StartDaemonFinished(Err("prompt cancelled".into())));
         assert_eq!(app.vm.notice.as_deref(), Some("prompt cancelled"));
