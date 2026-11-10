@@ -154,7 +154,12 @@ impl PlatformApplier {
     }
 
     fn add_route(&mut self, route: &Route) -> Result<(), TunError> {
-        let mut args = self.route_args("add", route)?;
+        let interface = self.interface.clone();
+        self.add_route_on(&interface, route)
+    }
+
+    fn add_route_on(&mut self, interface: &str, route: &Route) -> Result<(), TunError> {
+        let mut args = self.route_args_on(interface, "add", route)?;
         if let Some(gateway) = route.gateway {
             args.push(format!("nexthop={gateway}"));
         }
@@ -165,7 +170,12 @@ impl PlatformApplier {
     }
 
     fn delete_route(&mut self, route: &Route) -> Result<(), TunError> {
-        let mut args = self.route_args("delete", route)?;
+        let interface = self.interface.clone();
+        self.delete_route_on(&interface, route)
+    }
+
+    fn delete_route_on(&mut self, interface: &str, route: &Route) -> Result<(), TunError> {
+        let mut args = self.route_args_on(interface, "delete", route)?;
         if let Some(gateway) = route.gateway {
             args.push(format!("nexthop={gateway}"));
         }
@@ -250,7 +260,12 @@ impl PlatformApplier {
         }
     }
 
-    fn route_args(&self, verb: &str, route: &Route) -> Result<Vec<String>, TunError> {
+    fn route_args_on(
+        &self,
+        interface: &str,
+        verb: &str,
+        route: &Route,
+    ) -> Result<Vec<String>, TunError> {
         let IpAddr::V4(destination) = route.destination else {
             return Err(TunError::Unsupported(
                 "the Windows applier applies IPv4 routes only",
@@ -262,7 +277,7 @@ impl PlatformApplier {
             verb.into(),
             "route".into(),
             format!("{destination}/{}", route.prefix_len),
-            format!("interface={}", self.interface),
+            format!("interface={interface}"),
         ])
     }
 }
@@ -296,6 +311,28 @@ impl RollbackBackend for PlatformApplier {
             Change::SetDns { new, .. } => self.set_dns(new),
             Change::AddRoute(route) => self.add_route(route),
             Change::RemoveRoute(route) => self.delete_route(route),
+            Change::ReplaceRoute {
+                route,
+                displaced,
+                restore,
+            } => {
+                let displaced_route = displaced.to_route()?;
+                if *restore {
+                    match self.delete_route(route) {
+                        Ok(()) => {}
+                        Err(error) if error.is_already_absent() => {}
+                        Err(error) => return Err(error),
+                    }
+                    self.add_route_on(&displaced.interface, &displaced_route)
+                } else {
+                    match self.delete_route_on(&displaced.interface, &displaced_route) {
+                        Ok(()) => {}
+                        Err(error) if error.is_already_absent() => {}
+                        Err(error) => return Err(error),
+                    }
+                    self.add_route(route)
+                }
+            }
         }
     }
 

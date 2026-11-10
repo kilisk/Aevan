@@ -27,4 +27,4 @@ pub use error::TunError;
 pub use platform::{Availability, Readiness, WaitHandle, WaitSources};
 pub use privilege::{elevation, Elevation};
 pub use rollback::{Change, DnsContext, RollbackBackend, Session, UndoOutcome};
-pub use route::{diff_routes, Route, RouteDiff};
+pub use route::{diff_routes, Route, RouteDiff, RouteRecord};

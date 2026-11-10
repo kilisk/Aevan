@@ -20,7 +20,8 @@ use serde::{Deserialize, Serialize};
 use aevan_core::{AevanError, AevanResult};
 use aevan_tun::apply;
 use aevan_tun::{
-    Change, Elevation, RealCommandRunner, RollbackBackend, Route, TunError, UndoOutcome,
+    Change, Elevation, RealCommandRunner, RollbackBackend, Route, RouteRecord, TunError,
+    UndoOutcome,
 };
 
 use crate::protocol::{RecoveryFailure, RecoveryReport};
@@ -65,6 +66,54 @@ impl JournalRoute {
     fn to_route(&self) -> Result<Route, String> {
         Route::new(self.destination, self.prefix_len, self.gateway, self.metric)
             .map_err(|error| error.to_string())
+    }
+}
+
+/// A displaced route in serializable form.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JournalRouteRecord {
+    /// Destination network.
+    pub destination: IpAddr,
+    /// Prefix length.
+    pub prefix_len: u8,
+    /// Optional next hop.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway: Option<IpAddr>,
+    /// Interface that owned the route.
+    pub interface: String,
+    /// Platform flags.
+    #[serde(default)]
+    pub flags: String,
+    /// Route metric.
+    #[serde(default)]
+    pub metric: u32,
+}
+
+impl From<&RouteRecord> for JournalRouteRecord {
+    fn from(record: &RouteRecord) -> Self {
+        Self {
+            destination: record.destination,
+            prefix_len: record.prefix_len,
+            gateway: record.gateway,
+            interface: record.interface.clone(),
+            flags: record.flags.clone(),
+            metric: record.metric,
+        }
+    }
+}
+
+impl JournalRouteRecord {
+    fn to_record(&self) -> Result<RouteRecord, String> {
+        let route = Route::new(self.destination, self.prefix_len, self.gateway, self.metric)
+            .map_err(|error| error.to_string())?;
+        Ok(RouteRecord {
+            destination: route.destination,
+            prefix_len: route.prefix_len,
+            gateway: route.gateway,
+            interface: self.interface.clone(),
+            flags: self.flags.clone(),
+            metric: route.metric,
+        })
     }
 }
 
@@ -159,6 +208,15 @@ pub enum JournalChange {
         /// The route.
         route: JournalRoute,
     },
+    /// A pushed route replaced a conflicting route on another interface.
+    ReplaceRoute {
+        /// Our route.
+        route: JournalRoute,
+        /// The route found before the replacement.
+        displaced: JournalRouteRecord,
+        /// Whether this record is the restore direction.
+        restore: bool,
+    },
 }
 
 impl From<&Change> for JournalChange {
@@ -186,6 +244,15 @@ impl From<&Change> for JournalChange {
             },
             Change::RemoveRoute(route) => Self::RemoveRoute {
                 route: JournalRoute::from(route),
+            },
+            Change::ReplaceRoute {
+                route,
+                displaced,
+                restore,
+            } => Self::ReplaceRoute {
+                route: JournalRoute::from(route),
+                displaced: JournalRouteRecord::from(displaced),
+                restore: *restore,
             },
         }
     }
@@ -220,6 +287,15 @@ impl JournalChange {
             }),
             Self::AddRoute { route } => Ok(Change::AddRoute(route.to_route()?)),
             Self::RemoveRoute { route } => Ok(Change::RemoveRoute(route.to_route()?)),
+            Self::ReplaceRoute {
+                route,
+                displaced,
+                restore,
+            } => Ok(Change::ReplaceRoute {
+                route: route.to_route()?,
+                displaced: displaced.to_record()?,
+                restore: *restore,
+            }),
         }
     }
 }
@@ -614,6 +690,18 @@ mod tests {
             },
             Change::AddRoute(route(3)),
             Change::RemoveRoute(route(4)),
+            Change::ReplaceRoute {
+                route: route(5),
+                displaced: RouteRecord {
+                    destination: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 0)),
+                    prefix_len: 8,
+                    gateway: Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))),
+                    interface: "en0".into(),
+                    flags: "UP,GATEWAY,DONE,STATIC".into(),
+                    metric: 600,
+                },
+                restore: false,
+            },
         ];
         for change in changes {
             let journal_change = JournalChange::from(&change);

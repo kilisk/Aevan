@@ -59,6 +59,51 @@ impl Route {
     }
 }
 
+/// A route observed in the platform table before it was displaced.
+///
+/// The fields mirror what `route -n get` (macOS) and `ip route show` (Linux)
+/// report. They are persisted in the journal so a disconnect or crash recovery
+/// can put the original route back exactly as it was found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RouteRecord {
+    /// Destination network address.
+    pub destination: IpAddr,
+    /// Prefix length in bits.
+    pub prefix_len: u8,
+    /// Next hop, when the original route had one.
+    pub gateway: Option<IpAddr>,
+    /// Interface that owned the route.
+    pub interface: String,
+    /// Platform flags, for the journal and diagnostics.
+    pub flags: String,
+    /// Route metric, when the platform reports one.
+    pub metric: u32,
+}
+
+impl RouteRecord {
+    /// The destination in CIDR notation.
+    pub fn cidr(&self) -> String {
+        format!("{}/{}", self.destination, self.prefix_len)
+    }
+
+    /// Convert the record back into an applyable route.
+    pub fn to_route(&self) -> Result<Route, TunError> {
+        Route::new(self.destination, self.prefix_len, self.gateway, self.metric)
+    }
+
+    /// Whether the recorded route was scoped to its interface.
+    pub fn is_ifscoped(&self) -> bool {
+        self.flags
+            .split(|character: char| !character.is_ascii_alphanumeric())
+            .any(|flag| flag.eq_ignore_ascii_case("IFSCOPE"))
+    }
+
+    /// Whether this record describes the same destination and prefix.
+    pub fn same_prefix(&self, route: &Route) -> bool {
+        self.destination == route.destination && self.prefix_len == route.prefix_len
+    }
+}
+
 /// Routes to install and routes to remove to move from one set to another.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RouteDiff {

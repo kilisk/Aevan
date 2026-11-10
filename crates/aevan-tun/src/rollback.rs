@@ -11,7 +11,7 @@
 use std::net::IpAddr;
 
 use crate::error::TunError;
-use crate::route::Route;
+use crate::route::{Route, RouteRecord};
 
 /// Platform state captured when a DNS change is first applied.
 ///
@@ -70,6 +70,21 @@ pub enum Change {
     AddRoute(Route),
     /// One route was removed.
     RemoveRoute(Route),
+    /// A pushed route replaced a conflicting route that belonged to another
+    /// interface.
+    ///
+    /// The displaced record is captured before any change so a crash cannot
+    /// lose it. `restore` is false while applying and true for the inverse:
+    /// the inverse deletes our route first and then puts the displaced route
+    /// back exactly as it was recorded.
+    ReplaceRoute {
+        /// The route we install on the tunnel interface.
+        route: Route,
+        /// The foreign route that was found for the same prefix.
+        displaced: RouteRecord,
+        /// Whether to remove `route` and restore `displaced`.
+        restore: bool,
+    },
 }
 
 impl Change {
@@ -95,6 +110,15 @@ impl Change {
             },
             Self::AddRoute(route) => Self::RemoveRoute(route.clone()),
             Self::RemoveRoute(route) => Self::AddRoute(route.clone()),
+            Self::ReplaceRoute {
+                route,
+                displaced,
+                restore,
+            } => Self::ReplaceRoute {
+                route: route.clone(),
+                displaced: displaced.clone(),
+                restore: !restore,
+            },
         }
     }
 }

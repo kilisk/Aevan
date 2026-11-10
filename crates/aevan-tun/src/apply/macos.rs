@@ -13,10 +13,10 @@
 use std::net::IpAddr;
 
 use super::{ipv4_mask, run_checked};
-use crate::command::CommandRunner;
+use crate::command::{CommandRunner, Output};
 use crate::error::TunError;
 use crate::rollback::{Change, DnsContext, RollbackBackend, UndoOutcome};
-use crate::route::Route;
+use crate::route::{Route, RouteRecord};
 
 const EMPTY_DNS_MARKER: &str = "There aren't any DNS Servers set on";
 
@@ -85,10 +85,36 @@ impl PlatformApplier {
         )
     }
 
-    fn route(&mut self, verb: &str, route: &Route) -> Result<(), TunError> {
+    /// Run one route command and log its exact argument vector and exit
+    /// status. A route add or delete must never be skipped silently.
+    fn run_route(&mut self, args: &[String]) -> Result<Output, TunError> {
+        let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
+        let output = self.runner.run("route", &borrowed)?;
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        tracing::info!(
+            program = "route",
+            args = ?args,
+            status = %output.status,
+            success = output.status.success(),
+            stderr = stderr.trim(),
+            "route command"
+        );
+        Ok(output)
+    }
+
+    fn checked_route(&mut self, args: &[String]) -> Result<(), TunError> {
+        let output = self.run_route(args)?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(super::command_failure("route", &output))
+        }
+    }
+
+    fn add_route(&mut self, interface: &str, route: &Route, ifscope: bool) -> Result<(), TunError> {
         let mut args = vec![
             "-n".into(),
-            verb.into(),
+            "add".into(),
             "-net".into(),
             format!("{}/{}", route.destination, route.prefix_len),
         ];
@@ -96,10 +122,169 @@ impl PlatformApplier {
             Some(gateway) => args.push(format!("{gateway}")),
             None => {
                 args.push("-interface".into());
-                args.push(self.interface.clone());
+                args.push(interface.to_owned());
             }
         }
-        run_checked(self.runner.as_mut(), "route", &args)
+        if ifscope {
+            args.push("-ifscope".into());
+            args.push(interface.to_owned());
+        }
+        self.checked_route(&args)
+    }
+
+    fn delete_route(
+        &mut self,
+        interface: &str,
+        route: &Route,
+        ifscope: bool,
+    ) -> Result<(), TunError> {
+        let mut args = vec![
+            "-n".into(),
+            "delete".into(),
+            "-net".into(),
+            format!("{}/{}", route.destination, route.prefix_len),
+        ];
+        match route.gateway {
+            Some(gateway) => args.push(format!("{gateway}")),
+            None => {
+                args.push("-interface".into());
+                args.push(interface.to_owned());
+            }
+        }
+        if ifscope {
+            args.push("-ifscope".into());
+            args.push(interface.to_owned());
+        }
+        self.checked_route(&args)
+    }
+
+    fn add_our_route(&mut self, route: &Route, ifscope: bool) -> Result<(), TunError> {
+        let interface = self.interface.clone();
+        self.add_route(&interface, route, ifscope)
+    }
+
+    fn delete_our_route(
+        &mut self,
+        route: &Route,
+        ifscope: bool,
+        lenient: bool,
+    ) -> Result<(), TunError> {
+        let interface = self.interface.clone();
+        match self.delete_route(&interface, route, ifscope) {
+            Ok(()) => Ok(()),
+            Err(error) if lenient && error.is_already_absent() => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Read the exact route for `route`'s prefix from the live table.
+    ///
+    /// A less-specific route is not a conflict and is not returned.
+    fn current_route(&mut self, route: &Route) -> Result<Option<RouteRecord>, TunError> {
+        let args = vec![
+            "-n".into(),
+            "get".into(),
+            format!("{}/{}", route.destination, route.prefix_len),
+        ];
+        let text = match self.capture("route", &args)? {
+            Some(text) => text,
+            None => return Ok(None),
+        };
+        Ok(parse_route_record(&text).filter(|record| record.same_prefix(route)))
+    }
+
+    /// The exact prefix is already owned by a different interface.
+    fn conflicting_route(&mut self, route: &Route) -> Result<Option<RouteRecord>, TunError> {
+        match self.current_route(route)? {
+            Some(record) if record.interface != self.interface => Ok(Some(record)),
+            _ => Ok(None),
+        }
+    }
+
+    /// Delete the foreign route recorded before the journal entry was written.
+    fn delete_record(&mut self, record: &RouteRecord) -> Result<(), TunError> {
+        let route = record.to_route()?;
+        match self.delete_route(&record.interface, &route, record.is_ifscoped()) {
+            Ok(()) => Ok(()),
+            Err(error) if error.is_already_absent() => Ok(()),
+            Err(error) => Err(TunError::Io(std::io::Error::other(format!(
+                "cannot delete the conflicting route {} on {}: {error}",
+                record.cidr(),
+                record.interface
+            )))),
+        }
+    }
+
+    /// Put a displaced route back. A route already matching the record makes
+    /// this idempotent after a partial recovery.
+    fn restore_record(&mut self, record: &RouteRecord) -> Result<(), TunError> {
+        let route = record.to_route()?;
+        if let Some(current) = self.current_route(&route)? {
+            if current.interface == record.interface {
+                return Ok(());
+            }
+        }
+        self.add_route(&record.interface, &route, record.is_ifscoped())
+    }
+
+    /// Re-read the table and fail when a pushed route is not where it belongs.
+    fn verify_route(&mut self, route: &Route) -> Result<(), TunError> {
+        match self.current_route(route)? {
+            Some(record) => {
+                if let Some(gateway) = route.gateway {
+                    if record.gateway == Some(gateway) {
+                        Ok(())
+                    } else {
+                        Err(TunError::Io(std::io::Error::other(format!(
+                            "route {} was not applied with gateway {}; it uses {:?}",
+                            record.cidr(),
+                            gateway,
+                            record.gateway
+                        ))))
+                    }
+                } else if record.interface == self.interface {
+                    Ok(())
+                } else {
+                    Err(TunError::Io(std::io::Error::other(format!(
+                        "route {} was not applied to {}; it is on {}",
+                        record.cidr(),
+                        self.interface,
+                        record.interface
+                    ))))
+                }
+            }
+            None => Err(TunError::Io(std::io::Error::other(format!(
+                "route {}/{} is missing after apply",
+                route.destination, route.prefix_len
+            )))),
+        }
+    }
+
+    /// Add a route, replacing a foreign exact-prefix route when the platform
+    /// reports that the prefix already exists. A route already on our own
+    /// interface is accepted as-is and never deleted.
+    fn install_our_route(
+        &mut self,
+        route: &Route,
+        ifscope: bool,
+        allow_replace: bool,
+    ) -> Result<(), TunError> {
+        match self.add_our_route(route, ifscope) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                let Some(record) = self.current_route(route)? else {
+                    return Err(error);
+                };
+                if record.interface == self.interface {
+                    return Ok(());
+                }
+                if !allow_replace {
+                    return Err(error);
+                }
+                self.delete_record(&record)?;
+                self.add_our_route(route, true)
+            }
+        }
     }
 
     fn capture(&mut self, program: &str, args: &[String]) -> Result<Option<String>, TunError> {
@@ -231,6 +416,53 @@ fn warn_flush(program: &str, error: &TunError) {
     tracing::warn!(program, %error, "macOS DNS cache flush failed; continuing");
 }
 
+/// Parse the `route -n get <prefix>` document.
+///
+/// Only an exact destination/mask pair is returned. `destination:` and `mask:`
+/// are always present for an exact IPv4 route; the interface and gateway are
+/// optional depending on whether the route is on-link or through a next hop.
+fn parse_route_record(text: &str) -> Option<RouteRecord> {
+    let mut destination: Option<IpAddr> = None;
+    let mut mask: Option<IpAddr> = None;
+    let mut gateway: Option<IpAddr> = None;
+    let mut interface: Option<String> = None;
+    let mut flags = String::new();
+
+    for line in text.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("destination:") {
+            destination = rest.trim().parse().ok();
+        } else if let Some(rest) = line.strip_prefix("mask:") {
+            mask = rest.trim().parse().ok();
+        } else if let Some(rest) = line.strip_prefix("gateway:") {
+            gateway = rest.trim().parse().ok();
+        } else if let Some(rest) = line.strip_prefix("interface:") {
+            interface = Some(rest.trim().to_owned());
+        } else if let Some(rest) = line.strip_prefix("flags:") {
+            flags = rest
+                .trim()
+                .trim_matches(|character| character == '<' || character == '>')
+                .to_owned();
+        }
+    }
+
+    let destination = destination?;
+    let interface = interface?;
+    let prefix_len = match (destination, mask) {
+        (IpAddr::V4(_), Some(IpAddr::V4(mask))) => u32::from(mask).leading_ones() as u8,
+        (IpAddr::V6(_), Some(IpAddr::V6(mask))) => u128::from(mask).leading_ones() as u8,
+        _ => return None,
+    };
+    Some(RouteRecord {
+        destination,
+        prefix_len,
+        gateway,
+        interface,
+        flags,
+        metric: 0,
+    })
+}
+
 fn parse_default_interface(text: &str) -> Option<String> {
     text.lines().find_map(|line| {
         let line = line.trim();
@@ -296,13 +528,26 @@ fn parse_dns_servers(text: &str) -> Vec<IpAddr> {
 
 impl RollbackBackend for PlatformApplier {
     fn prepare(&mut self, change: &mut Change) -> Result<(), TunError> {
-        if let Change::SetDns { old, new, context } = change {
-            if new.is_empty() || !matches!(context, DnsContext::Unspecified) {
-                return Ok(());
+        match change {
+            Change::SetDns { old, new, context } => {
+                if new.is_empty() || !matches!(context, DnsContext::Unspecified) {
+                    return Ok(());
+                }
+                let service = self.primary_service()?;
+                *old = self.get_dns(&service)?;
+                *context = DnsContext::MacosService(service);
             }
-            let service = self.primary_service()?;
-            *old = self.get_dns(&service)?;
-            *context = DnsContext::MacosService(service);
+            Change::AddRoute(route) => {
+                let route = route.clone();
+                if let Some(displaced) = self.conflicting_route(&route)? {
+                    *change = Change::ReplaceRoute {
+                        route,
+                        displaced,
+                        restore: false,
+                    };
+                }
+            }
+            _ => {}
         }
         Ok(())
     }
@@ -325,10 +570,13 @@ impl RollbackBackend for PlatformApplier {
             Change::SetRoutes { old, new } => {
                 let diff = crate::route::diff_routes(old, new);
                 for route in &diff.to_remove {
-                    self.route("delete", route)?;
+                    self.delete_our_route(route, false, false)?;
                 }
                 for route in &diff.to_add {
-                    self.route("add", route)?;
+                    self.install_our_route(route, false, true)?;
+                }
+                for route in new {
+                    self.verify_route(route)?;
                 }
                 Ok(())
             }
@@ -340,8 +588,34 @@ impl RollbackBackend for PlatformApplier {
                     self.apply_dns(context, new)
                 }
             }
-            Change::AddRoute(route) => self.route("add", route),
-            Change::RemoveRoute(route) => self.route("delete", route),
+            Change::AddRoute(route) => {
+                self.install_our_route(route, false, true)?;
+                self.verify_route(route)
+            }
+            Change::RemoveRoute(route) => self.delete_our_route(route, false, true),
+            Change::ReplaceRoute {
+                route,
+                displaced,
+                restore,
+            } => {
+                if *restore {
+                    // Delete ours first, then put the original back.
+                    self.delete_our_route(route, true, true)?;
+                    self.restore_record(displaced)
+                } else {
+                    self.delete_record(displaced)?;
+                    if let Err(error) = self.add_our_route(route, true) {
+                        let _ = self.restore_record(displaced);
+                        return Err(error);
+                    }
+                    if let Err(error) = self.verify_route(route) {
+                        let _ = self.delete_our_route(route, true, true);
+                        let _ = self.restore_record(displaced);
+                        return Err(error);
+                    }
+                    Ok(())
+                }
+            }
         }
     }
 
@@ -387,6 +661,15 @@ mod tests {
     #[test]
     fn ifconfig_and_route_vectors_are_separate_arguments() {
         let runner = RecordingRunner::new();
+        runner.respond("route", "");
+        runner.respond(
+            "route",
+            "destination: 10.0.0.0
+mask: 255.0.0.0
+interface: utun3
+flags: <UP,DONE,STATIC>
+",
+        );
         let mut session = Session::new(crate::apply::platform_applier_unchecked(
             Box::new(runner.clone()),
             "utun3",
@@ -422,6 +705,11 @@ mod tests {
         );
         assert_eq!(
             calls[2],
+            vec!["-n", "get", "10.0.0.0/8"],
+            "apply verifies the route by re-reading the table"
+        );
+        assert_eq!(
+            calls[3],
             vec!["-n", "delete", "-net", "10.0.0.0/8", "-interface", "utun3"]
         );
     }
@@ -601,5 +889,188 @@ mod tests {
                 context: DnsContext::MacosService("Wi-Fi".into()),
             }
         );
+    }
+
+    fn foreign_route_text() -> &'static str {
+        "   route to: 10.0.0.0
+         destination: 10.0.0.0
+                mask: 255.0.0.0
+             gateway: 192.168.1.1
+           interface: en0
+               flags: <UP,GATEWAY,DONE,STATIC>
+"
+    }
+
+    fn our_route_text() -> &'static str {
+        "   route to: 10.0.0.0
+         destination: 10.0.0.0
+                mask: 255.0.0.0
+           interface: utun3
+               flags: <UP,DONE,STATIC>
+"
+    }
+
+    fn pushed_route() -> Route {
+        Route::on_link(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 0)), 8).expect("route")
+    }
+
+    fn route_calls(runner: &RecordingRunner) -> Vec<Vec<String>> {
+        runner
+            .calls()
+            .into_iter()
+            .filter(|call| call.program == "route")
+            .map(|call| call.args)
+            .collect()
+    }
+
+    #[test]
+    fn a_foreign_route_is_recorded_deleted_and_ours_is_added() {
+        let runner = RecordingRunner::new();
+        // prepare reads the foreign route; apply deletes it, adds ours and
+        // re-reads the table to verify.
+        runner.respond("route", foreign_route_text());
+        runner.respond("route", "");
+        runner.respond("route", "");
+        runner.respond("route", our_route_text());
+
+        let mut applier =
+            crate::apply::platform_applier_unchecked(Box::new(runner.clone()), "utun3");
+        let mut change = Change::AddRoute(pushed_route());
+        applier.prepare(&mut change).expect("prepare");
+
+        let Change::ReplaceRoute {
+            route,
+            displaced,
+            restore,
+        } = &change
+        else {
+            panic!("expected ReplaceRoute, got {change:?}");
+        };
+        assert_eq!(route, &pushed_route());
+        assert_eq!(displaced.destination, v4([10, 0, 0, 0]));
+        assert_eq!(displaced.prefix_len, 8);
+        assert_eq!(displaced.gateway, Some(v4([192, 168, 1, 1])));
+        assert_eq!(displaced.interface, "en0");
+        assert!(displaced.flags.contains("GATEWAY"));
+        assert!(!restore);
+
+        applier.apply(&change).expect("replace");
+        let calls = route_calls(&runner);
+        assert_eq!(calls[0], vec!["-n", "get", "10.0.0.0/8"]);
+        assert_eq!(
+            calls[1],
+            vec!["-n", "delete", "-net", "10.0.0.0/8", "192.168.1.1",]
+        );
+        assert_eq!(
+            calls[2],
+            vec![
+                "-n",
+                "add",
+                "-net",
+                "10.0.0.0/8",
+                "-interface",
+                "utun3",
+                "-ifscope",
+                "utun3",
+            ]
+        );
+        assert_eq!(calls[3], vec!["-n", "get", "10.0.0.0/8"]);
+    }
+
+    #[test]
+    fn a_route_already_on_our_interface_is_left_alone() {
+        let runner = RecordingRunner::new();
+        runner.respond("route", our_route_text());
+
+        let mut applier =
+            crate::apply::platform_applier_unchecked(Box::new(runner.clone()), "utun3");
+        let mut change = Change::AddRoute(pushed_route());
+        applier.prepare(&mut change).expect("prepare");
+        assert_eq!(change, Change::AddRoute(pushed_route()));
+
+        runner.respond("route", "");
+        runner.respond("route", our_route_text());
+        applier.apply(&change).expect("add");
+        let calls = route_calls(&runner);
+        assert!(
+            calls
+                .iter()
+                .all(|args| !args.contains(&"delete".to_owned())),
+            "a route on our own interface must never be deleted: {calls:?}"
+        );
+    }
+
+    #[test]
+    fn restoring_a_displaced_route_deletes_ours_first_and_puts_the_original_back() {
+        let runner = RecordingRunner::new();
+        runner.respond("route", foreign_route_text());
+        runner.respond("route", "");
+        runner.respond("route", "");
+        runner.respond("route", our_route_text());
+
+        let mut applier =
+            crate::apply::platform_applier_unchecked(Box::new(runner.clone()), "utun3");
+        let mut change = Change::AddRoute(pushed_route());
+        applier.prepare(&mut change).expect("prepare");
+        applier.apply(&change).expect("replace");
+        let before = route_calls(&runner).len();
+
+        // Restore: delete our scoped route, read the table, add the original.
+        runner.respond("route", "");
+        runner.respond("route", "");
+        runner.respond("route", "");
+        applier.undo(&change).expect("restore");
+        let calls = route_calls(&runner);
+        let restore = &calls[before..];
+        assert_eq!(
+            restore[0],
+            vec![
+                "-n",
+                "delete",
+                "-net",
+                "10.0.0.0/8",
+                "-interface",
+                "utun3",
+                "-ifscope",
+                "utun3",
+            ]
+        );
+        assert_eq!(restore[1], vec!["-n", "get", "10.0.0.0/8"]);
+        assert_eq!(
+            restore[2],
+            vec!["-n", "add", "-net", "10.0.0.0/8", "192.168.1.1"]
+        );
+    }
+
+    #[test]
+    fn a_failed_delete_names_the_conflicting_interface() {
+        let runner = RecordingRunner::new();
+        runner.respond("route", foreign_route_text());
+        runner.respond_failure("route", "Operation not permitted");
+
+        let mut applier =
+            crate::apply::platform_applier_unchecked(Box::new(runner.clone()), "utun3");
+        let mut change = Change::AddRoute(pushed_route());
+        applier.prepare(&mut change).expect("prepare");
+        let error = applier.apply(&change).expect_err("delete must fail");
+        assert!(error.to_string().contains("en0"), "{error}");
+        assert!(
+            !route_calls(&runner)
+                .iter()
+                .any(|args| args.contains(&"add".to_owned())),
+            "ours must not be added after a refused delete"
+        );
+    }
+
+    #[test]
+    fn verification_fails_when_the_route_is_missing_after_add() {
+        let runner = RecordingRunner::new();
+        let mut applier =
+            crate::apply::platform_applier_unchecked(Box::new(runner.clone()), "utun3");
+        // The add succeeds and the verification read returns no route.
+        let error = applier
+            .apply(&Change::AddRoute(pushed_route()))
+            .expect_err("a missing route must fail apply");
+        assert!(error.to_string().contains("missing after apply"), "{error}");
     }
 }

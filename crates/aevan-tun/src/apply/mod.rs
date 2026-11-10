@@ -115,7 +115,10 @@ pub fn step_name(change: &Change) -> &'static str {
     match change {
         Change::SetAddr { .. } => "address",
         Change::SetMtu { .. } => "mtu",
-        Change::SetRoutes { .. } | Change::AddRoute(_) | Change::RemoveRoute(_) => "route",
+        Change::SetRoutes { .. }
+        | Change::AddRoute(_)
+        | Change::RemoveRoute(_)
+        | Change::ReplaceRoute { .. } => "route",
         Change::SetDns { .. } => "dns",
     }
 }
