@@ -177,11 +177,11 @@ fn state_dir() -> AevanResult<PathBuf> {
     };
     // Root, but no HOME to resolve: launchd does exactly this.
     #[cfg(target_os = "macos")]
-    if crate::server::process_is_root() {
+    if server::process_is_root() {
         return Ok(PathBuf::from("/var/root/Library/Application Support/aevan"));
     }
     #[cfg(all(unix, not(target_os = "macos")))]
-    if crate::server::process_is_root() {
+    if server::process_is_root() {
         return Ok(PathBuf::from("/root/.config/aevan"));
     }
     Err(error)
