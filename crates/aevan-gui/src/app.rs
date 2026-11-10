@@ -135,16 +135,32 @@ pub fn run(store: ProfileStore) -> iced::Result {
     // any live tunnel alone, and Disconnect is the explicit stop action.
     vm.leave_daemon_on_quit = cfg!(target_os = "macos");
 
-    iced::application("Aevan", App::update, App::view)
-        .subscription(App::subscription)
-        .theme(|_| Theme::Dark)
-        .window_size((760.0, 620.0))
-        // Closing the window hides it; only the tray/menu-bar Quit item exits.
-        .exit_on_close_request(false)
-        .run_with(move || {
+    // `iced` 0.14 boots through an `Fn` closure, so the view model is moved
+    // out of this slot once. A second boot (which iced never performs) would
+    // fall back to an empty view model instead of panicking.
+    let boot_vm = std::sync::Mutex::new(Some(vm));
+    iced::application(
+        move || {
+            let vm = boot_vm
+                .lock()
+                .ok()
+                .and_then(|mut slot| slot.take())
+                .unwrap_or_else(|| {
+                    ViewModel::new(&ProfileStore::default(), String::new(), now_unix())
+                });
             let tray = tray::start();
             App::new(vm, tray)
-        })
+        },
+        App::update,
+        App::view,
+    )
+    .title("Aevan")
+    .subscription(App::subscription)
+    .theme(|_: &App| Theme::Dark)
+    .window_size((760.0, 620.0))
+    // Closing the window hides it; only the tray/menu-bar Quit item exits.
+    .exit_on_close_request(false)
+    .run()
 }
 
 impl App {
@@ -192,7 +208,10 @@ impl App {
             None => Subscription::none(),
         };
         let close = window::close_requests().map(Message::WindowCloseRequested);
-        let keys = iced::keyboard::on_key_press(handle_key);
+        let keys = iced::keyboard::listen().filter_map(|event| match event {
+            iced::keyboard::Event::KeyPressed { key, modifiers, .. } => handle_key(key, modifiers),
+            _ => None,
+        });
         Subscription::batch([
             tick,
             tray::subscription(),
@@ -445,7 +464,7 @@ impl App {
             }
             Message::WindowCloseRequested(id) => {
                 self.vm.window_closed();
-                return window::change_mode(id, window::Mode::Hidden);
+                return window::set_mode(id, window::Mode::Hidden);
             }
             Message::InstanceShowRequested => return focus_window(),
             Message::StartDaemon => {
@@ -540,7 +559,7 @@ impl App {
     fn view(&self) -> Element<'_, Message> {
         let header = row![
             text("Aevan").size(30),
-            Space::with_width(Length::Fill),
+            Space::new().width(Length::Fill),
             state_badge(&self.vm.state),
             navigation(),
         ]
@@ -753,7 +772,7 @@ impl App {
         let mut view = column![
             row![
                 text("Profiles").size(22),
-                Space::with_width(Length::Fill),
+                Space::new().width(Length::Fill),
                 button(text("Add profile").size(14))
                     .on_press(Message::BeginAddProfile)
                     .style(button::primary)
@@ -1430,9 +1449,9 @@ fn disconnect_task(profile: Option<String>) -> Task<Message> {
 fn focus_window() -> Task<Message> {
     // A window hidden by its close button has to be shown again before it can
     // take focus. The tray and the single-instance endpoint share this path.
-    iced::window::get_latest().and_then(|id| {
+    iced::window::latest().and_then(|id| {
         Task::batch([
-            iced::window::change_mode(id, window::Mode::Windowed),
+            iced::window::set_mode(id, window::Mode::Windowed),
             iced::window::gain_focus(id),
         ])
     })
@@ -1478,7 +1497,7 @@ fn cmd_q(key: &Key, modifiers: Modifiers) -> Option<Message> {
 /// declaration order and an explicit wrap at both ends.
 fn focus_task(field: Option<FocusField>) -> Task<Message> {
     match field {
-        Some(field) => iced::widget::text_input::focus(field.id()),
+        Some(field) => iced::widget::operation::focus(field.id()),
         None => Task::none(),
     }
 }

@@ -151,19 +151,22 @@ mod channel {
 
     fn stream() -> impl Stream<Item = Message> {
         let mut receiver = events().subscribe();
-        iced::stream::channel(16, move |mut output| async move {
-            loop {
-                match receiver.recv().await {
-                    Ok(event) => {
-                        if output.send(Message::Tray(event)).await.is_err() {
-                            break;
+        iced::stream::channel(
+            16,
+            move |mut output: iced::futures::channel::mpsc::Sender<Message>| async move {
+                loop {
+                    match receiver.recv().await {
+                        Ok(event) => {
+                            if output.send(Message::Tray(event)).await.is_err() {
+                                break;
+                            }
                         }
+                        Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(broadcast::error::RecvError::Closed) => break,
                     }
-                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                    Err(broadcast::error::RecvError::Closed) => break,
                 }
-            }
-        })
+            },
+        )
     }
 }
 

@@ -29,19 +29,22 @@ pub fn subscription() -> iced::Subscription<Message> {
 
 fn stream() -> impl Stream<Item = Message> {
     let mut receiver = events().subscribe();
-    iced::stream::channel(8, move |mut output| async move {
-        loop {
-            match receiver.recv().await {
-                Ok(()) => {
-                    if output.send(Message::InstanceShowRequested).await.is_err() {
-                        break;
+    iced::stream::channel(
+        8,
+        move |mut output: iced::futures::channel::mpsc::Sender<Message>| async move {
+            loop {
+                match receiver.recv().await {
+                    Ok(()) => {
+                        if output.send(Message::InstanceShowRequested).await.is_err() {
+                            break;
+                        }
                     }
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => break,
                 }
-                Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(broadcast::error::RecvError::Closed) => break,
             }
-        }
-    })
+        },
+    )
 }
 
 /// Claim the platform endpoint. A `Secondary` result means the caller must
