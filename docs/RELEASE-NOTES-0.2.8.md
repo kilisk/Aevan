@@ -42,6 +42,35 @@ ls -l "/Library/Application Support/Aevan/"
 
 Expected: `last exit code = 0`, and `aevan.sock` owned by root with mode `srw-rw-rw-`.
 
+
+## The macOS crash, and why the app asked "Where is use_default?"
+
+A crash report from a MacBook (SIGABRT, `abort()` on the main thread inside a CFRunLoop block, ~20 s
+after launch) plus a macOS *Choose Application* sheet is what finally named this one: the
+notification stack ran **AppleScript inside the GUI process**. `notify-rust` pulls in
+`mac-notification-sys`, which AppleScript-drives the notification centre; a string in the interpolated
+text made AppleScript look for an application that does not exist, macOS raised the chooser, and
+dismissing it aborted the process.
+
+- macOS no longer links `notify-rust`/`mac-notification-sys` at all — `cargo tree --target
+  aarch64-apple-darwin` contains neither. Notifications go through a **child** `/usr/bin/osascript`,
+  so an AppleScript error is an exit code and a log line, never a dead UI.
+- The script is built by a pure, unit-tested quoting function covering double quotes, backslashes,
+  newlines, backticks and the literal `use default`.
+- Tray, notification and background callbacks are wrapped in `catch_unwind`; a panic becomes a banner.
+- A test now fails the build if production GUI code contains `unwrap`, `expect`, `panic!` or
+  `unreachable!`.
+
+## Other macOS gaps closed
+
+- **Tab now works.** Every form has a declared focus order (Tab, Shift+Tab, Enter to submit, Escape to
+  close), held in the view model as plain data and unit-tested: it cycles, wraps and reverses.
+- **TOTP enrolment actually saves.** The secret is written to an owner-only file (dir `0700`, file
+  `0600`), read back and turned into a code immediately, and any failure is shown in the Settings
+  sheet instead of being discarded.
+- **Start at login works on macOS and Linux.** `autostart.rs` was Windows-only; macOS now installs a
+  per-user LaunchAgent and Linux an XDG autostart entry, both driven by the Settings toggle.
+
 ## Downloads
 
 | OS | file |
