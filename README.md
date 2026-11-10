@@ -64,6 +64,8 @@ protocol is described in [docs/PROTOCOL.md](docs/PROTOCOL.md).
 
 The device layer is real on all three platforms. Only the Windows data plane has been exercised end to end; macOS and Linux device creation is live-verified in CI, but their full tunnel path (handshake, ESP traffic, apply, teardown) is still a human check.
 
+The per-capability implementation and verification state is tracked in [docs/PLATFORM-MATRIX.md](docs/PLATFORM-MATRIX.md); a capability that is implemented on one OS and stubbed or absent on another must carry a gap entry in [docs/platform-gaps.toml](docs/platform-gaps.toml), and the CI `platform-matrix` job enforces it.
+
 ## Install
 
 Windows: use `aevan-<version>-x64.msi` (per-machine, Administrator) or the
