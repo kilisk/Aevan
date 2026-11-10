@@ -15,6 +15,7 @@ pub mod cookies;
 pub mod error;
 pub mod html;
 pub mod http;
+pub mod realm;
 pub mod tls;
 pub mod url;
 
@@ -26,5 +27,9 @@ pub use cookies::{parse_http_date, Cookie, CookieDiagnostics, CookieInfo, Cookie
 pub use error::ProtoError;
 pub use html::{find_input, parse_forms, Form, FormInput};
 pub use http::{build_get_request, build_post_request, parse_response, HttpRequest, HttpResponse};
+pub use realm::{
+    detect_realm, detect_realm_with, detect_realm_with_timeout, realm_from_page, RealmError,
+    DEFAULT_REALM_TIMEOUT,
+};
 pub use tls::{inspect_https, CertInfo, Inspection, RawTls, TlsObservation};
 pub use url::Url;
