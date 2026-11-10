@@ -381,7 +381,7 @@ where
                     tracing::error!(
                         fd = ?sources.device,
                         consecutive = zero_device_drains,
-                        "ESP device reports readable but drained zero packets;                          stopping device polling so the bounded sleep can reveal the difference"
+                        "ESP device reports readable but drained zero packets; stopping device polling so the bounded sleep can reveal the difference"
                     );
                     session.set_device_polling(false);
                     device_polling = false;
