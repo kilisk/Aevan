@@ -203,6 +203,14 @@ jobs:
           $msi = Get-ChildItem target/dist/*.msi | Select-Object -First 1
           wix msi validate $msi.FullName
 
+      - name: Record artifact checksums
+        shell: bash
+        run: |
+          cd target/dist
+          if command -v sha256sum >/dev/null 2>&1; then SUM=sha256sum; else SUM='shasum -a 256'; fi
+          $SUM *.msi *.zip > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v7
         with:
@@ -210,6 +218,7 @@ jobs:
           path: |
             target/dist/*.msi
             target/dist/*.zip
+            target/dist/SHA256SUMS.txt
           if-no-files-found: error
 
   package-macos:
@@ -285,6 +294,14 @@ jobs:
           test -d "$mountpoint/Applications"
           echo "dmg verification passed"
 
+      - name: Record artifact checksums
+        shell: bash
+        run: |
+          cd target/dist
+          if command -v sha256sum >/dev/null 2>&1; then SUM=sha256sum; else SUM='shasum -a 256'; fi
+          $SUM *.pkg *.dmg > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v7
         with:
@@ -292,6 +309,7 @@ jobs:
           path: |
             target/dist/*.pkg
             target/dist/*.dmg
+            target/dist/SHA256SUMS.txt
             target/dist/Aevan.app
           if-no-files-found: error
 
@@ -372,6 +390,14 @@ jobs:
             rpm -qlp "$rpm_file" | grep -Fxq "$path"
           done
 
+      - name: Record artifact checksums
+        shell: bash
+        run: |
+          cd target/dist
+          if command -v sha256sum >/dev/null 2>&1; then SUM=sha256sum; else SUM='shasum -a 256'; fi
+          $SUM *.tar.gz *.deb *.rpm > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v7
         with:
@@ -380,4 +406,5 @@ jobs:
             target/dist/*.tar.gz
             target/dist/*.deb
             target/dist/*.rpm
+            target/dist/SHA256SUMS.txt
           if-no-files-found: error
