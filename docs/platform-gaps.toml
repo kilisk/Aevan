@@ -1,0 +1,50 @@
+# Known cross-platform capability gaps.
+#
+# The platform-matrix CI job requires an entry here whenever a capability is
+# implemented on at least one platform and is a stub or absent on another.
+# Each entry needs a reason and either an owner_note (a product decision) or a
+# tracking_note (work that is expected to close the gap). These entries are
+# product constraints, not verification claims; see docs/platform-evidence.toml
+# for what has actually been run.
+
+[[gap]]
+capability = "tray-icon"
+platform = "linux"
+reason = "Linux is deliberately window-only: a tray would add a GTK/libappindicator or StatusNotifier host dependency that this project does not ship."
+owner_note = "Product decision: do not add a Linux tray without a packaging decision that accepts the extra system dependency."
+
+[[gap]]
+capability = "tun-device"
+platform = "macos"
+reason = "The utun device opens in CI's tun_smoke, but the full tunnel (handshake, ESP through the device, address/route/DNS apply and teardown) has not been run on macOS."
+tracking_note = "Tracked with the macOS live-tunnel verification in docs/STATUS.md."
+
+[[gap]]
+capability = "tun-device"
+platform = "linux"
+reason = "The /dev/net/tun device opens in CI's tun_smoke, but the full tunnel (handshake, ESP through the device, address/route/DNS apply and teardown) has not been run on Linux."
+tracking_note = "Tracked with the Linux live-tunnel verification in docs/STATUS.md."
+
+[[gap]]
+capability = "dns-apply"
+platform = "macos"
+reason = "The networksetup DNS path is unit-tested but has not been run in a live tunnel on macOS."
+tracking_note = "Tracked with the macOS live-tunnel verification in docs/STATUS.md."
+
+[[gap]]
+capability = "dns-apply"
+platform = "linux"
+reason = "The systemd-resolved, resolvconf and /etc/resolv.conf fallback paths are unit-tested but have not been run in a live tunnel on Linux."
+tracking_note = "Tracked with the Linux live-tunnel verification in docs/STATUS.md."
+
+[[gap]]
+capability = "notifications"
+platform = "macos"
+reason = "The UserNotifications implementation is compile-only: it has not been exercised on Apple hardware."
+tracking_note = "Tracked with the macOS GUI live verification in docs/STATUS.md."
+
+[[gap]]
+capability = "daemon-registration"
+platform = "macos"
+reason = "The SMAppService registration and approval flow has not been run; CI's cross-UID check only proves the root daemon socket is reachable."
+tracking_note = "Tracked with the macOS daemon live verification in docs/STATUS.md."

@@ -1,0 +1,168 @@
+# What has actually been run for each capability and platform.
+#
+# The platform matrix reads this file for its `Verified` column and never
+# upgrades a cell from code alone. `state` is one of:
+#   verified-live  an actual run on that operating system
+#   compile-only   the code builds, but nobody has run it there
+#
+# `source` names the run: a CI job or a dated user report. The Windows tunnel
+# evidence is the live verification recorded in docs/CONNECT.md (2026-11-04).
+# The macOS and Linux tun-device entries record only the CI smoke proof that the
+# device opens; the full tunnel is still compile-only, as docs/platform-gaps.toml
+# states.
+
+[[evidence]]
+capability = "tun-device"
+platform = "windows"
+state = "verified-live"
+source = "docs/CONNECT.md: live Windows tunnel verification (2026-11-04)"
+
+[[evidence]]
+capability = "tun-device"
+platform = "macos"
+state = "compile-only"
+source = "CI job test (macos-latest): tun_smoke opens utun; no full tunnel run"
+
+[[evidence]]
+capability = "tun-device"
+platform = "linux"
+state = "compile-only"
+source = "CI job test (ubuntu-latest): tun_smoke opens /dev/net/tun; no full tunnel run"
+
+[[evidence]]
+capability = "address-and-routes"
+platform = "windows"
+state = "verified-live"
+source = "docs/CONNECT.md: live Windows tunnel verification (2026-11-04)"
+
+[[evidence]]
+capability = "address-and-routes"
+platform = "macos"
+state = "compile-only"
+source = "not exercised; no live macOS tunnel evidence"
+
+[[evidence]]
+capability = "address-and-routes"
+platform = "linux"
+state = "compile-only"
+source = "not exercised; no live Linux tunnel evidence"
+
+[[evidence]]
+capability = "dns-apply"
+platform = "windows"
+state = "verified-live"
+source = "docs/CONNECT.md: live Windows tunnel verification (2026-11-04)"
+
+[[evidence]]
+capability = "dns-apply"
+platform = "macos"
+state = "compile-only"
+source = "not exercised; no live macOS tunnel evidence"
+
+[[evidence]]
+capability = "dns-apply"
+platform = "linux"
+state = "compile-only"
+source = "not exercised; no live Linux tunnel evidence"
+
+[[evidence]]
+capability = "daemon-autostart"
+platform = "windows"
+state = "compile-only"
+source = "not exercised; no live logon run recorded"
+
+[[evidence]]
+capability = "daemon-autostart"
+platform = "macos"
+state = "compile-only"
+source = "not exercised; no live logon run recorded"
+
+[[evidence]]
+capability = "daemon-autostart"
+platform = "linux"
+state = "compile-only"
+source = "not exercised; no live logon run recorded"
+
+[[evidence]]
+capability = "tray-icon"
+platform = "windows"
+state = "compile-only"
+source = "not exercised; no live tray run recorded"
+
+[[evidence]]
+capability = "tray-icon"
+platform = "macos"
+state = "compile-only"
+source = "not exercised; no live menu-bar run recorded"
+
+[[evidence]]
+capability = "notifications"
+platform = "windows"
+state = "compile-only"
+source = "not exercised; no live notification run recorded"
+
+[[evidence]]
+capability = "notifications"
+platform = "macos"
+state = "compile-only"
+source = "not exercised; no live notification run recorded"
+
+[[evidence]]
+capability = "notifications"
+platform = "linux"
+state = "compile-only"
+source = "not exercised; no live notification run recorded"
+
+[[evidence]]
+capability = "single-instance"
+platform = "windows"
+state = "compile-only"
+source = "not exercised; no live Windows single-instance run recorded"
+
+[[evidence]]
+capability = "single-instance"
+platform = "macos"
+state = "compile-only"
+source = "not exercised; no live macOS single-instance run recorded"
+
+[[evidence]]
+capability = "single-instance"
+platform = "linux"
+state = "compile-only"
+source = "not exercised; no live Linux single-instance run recorded"
+
+[[evidence]]
+capability = "daemon-registration"
+platform = "windows"
+state = "compile-only"
+source = "not exercised; no live Windows registration run recorded"
+
+[[evidence]]
+capability = "daemon-registration"
+platform = "macos"
+state = "compile-only"
+source = "CI job test (macos-latest): cross-UID socket check proves the root daemon endpoint only; SMAppService registration not run"
+
+[[evidence]]
+capability = "daemon-registration"
+platform = "linux"
+state = "compile-only"
+source = "not exercised; no live Linux service registration run recorded"
+
+[[evidence]]
+capability = "installer-artifact"
+platform = "windows"
+state = "compile-only"
+source = "built and inspected in CI; not installed on a clean machine"
+
+[[evidence]]
+capability = "installer-artifact"
+platform = "macos"
+state = "compile-only"
+source = "built and validated in CI; not installed on a clean machine"
+
+[[evidence]]
+capability = "installer-artifact"
+platform = "linux"
+state = "compile-only"
+source = "built and inspected in CI; not installed on a clean machine"
