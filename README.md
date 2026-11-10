@@ -87,14 +87,15 @@ availability, uninstall commands and the macOS Gatekeeper workaround,
 
 ## Add a profile
 
-A profile stores only the gateway URL, realm and optional username. Passwords
-and TOTP secrets never go in a profile; the password is read from the terminal
-and the TOTP secret, when enrolled, lives in the OS keyring.
+A profile stores only the gateway URL, optional realm and optional username.
+Passwords and TOTP secrets never go in a profile; the password is read from the
+terminal and the TOTP secret, when enrolled, lives in the OS keyring. The realm
+is optional too: the gateway advertises it, so `aevan` detects and saves it on
+the first connect or login. Pass `--realm <value>` only to override detection.
 
 ```sh
 aevan profile add work \
   --url https://vpn.example.com/staff \
-  --realm example_realm \
   --user alice
 aevan profile list
 aevan doctor --json

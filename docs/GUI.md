@@ -191,17 +191,20 @@ notification is shown for a plain `disconnected` transition or for repeated
 * The daemon's own state and failure message are shown above the list.
 * **Add profile** opens a sheet for the name, gateway URL, realm and username.
   Each field is validated in the view model (non-empty unique name, an http(s)
-  URL with a host, non-empty realm and non-empty username for non-interactive
-  login), Save stays disabled until the draft is valid, and saving writes
+  URL with a host and non-empty username for non-interactive login; the realm
+  is optional), Save stays disabled until the draft is valid, and saving writes
   through `ProfileStore`, refreshes the list, selects the new profile and
-  returns to it. No password or token field exists: profiles store no secrets.
+  returns to it. The realm field's placeholder is “detect automatically”: leave
+  it empty and the gateway's advertised realm is detected and saved on the first
+  connect. No password or token field exists: profiles store no secrets.
 * **Edit** opens the same sheet pre-filled with the stored name, gateway URL,
   realm and username. Saving writes through the same `ProfileStore` path,
   refreshes the list in place and keeps the edited profile selected. A name
   already used by a different profile is rejected on the name field; saving
   under its own current name is allowed. If the edited profile is the connected
   one, the sheet says changes apply to the next connection and the live tunnel
-  is not touched. No password, token or TOTP secret is shown or stored here.
+  is not touched. After a successful detection the sheet shows the detected
+  realm. No password, token or TOTP secret is shown or stored here.
 * **Delete** asks `Delete “<name>”? This cannot be undone.` with Delete and
   Cancel. Confirming removes the profile from the store, refreshes the list,
   and clears the selection and shows the empty state when the deleted profile

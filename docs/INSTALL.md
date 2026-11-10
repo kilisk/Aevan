@@ -640,8 +640,8 @@ leaves the deliberate, visible start to you (or to the `aevan` launcher).
 ## Verify an install
 
 `aevan doctor` is the safe first check. It inspects DNS/TCP, the TLS chain, the
-HTTP response and the TUN layer; it never authenticates and never changes
-routes:
+HTTP response, the authentication realm and the TUN layer; it never
+authenticates and never changes routes:
 
 ```sh
 aevan doctor
@@ -649,10 +649,12 @@ aevan --json doctor
 ```
 
 A real connect needs a gateway, a profile and your credentials. Nothing in this
-repository supplies those:
+repository supplies those. The realm is optional: the gateway advertises it on
+its sign-in page, so `aevan` detects and stores it on the first connect or
+login. Pass `--realm <value>` only to override detection.
 
 ```sh
-aevan profile add work --url https://your-gateway.example/ --realm your-realm --user your-name
+aevan profile add work --url https://your-gateway.example/ --user your-name
 aevan login work
 aevan connect work
 aevan status
