@@ -1,5 +1,5 @@
 cask "aevan" do
-  version "0.2.12"
+  version "0.2.13"
   sha256 "d4bc565e01eba9db26d32b60535a3bb0c108a299c6c938868ede6bfe1080477d"
 
   url "https://github.com/kilisk/Aevan/releases/download/v#{version}/aevan-#{version}-arm64%2Bx86_64.dmg"
