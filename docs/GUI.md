@@ -189,13 +189,25 @@ notification is shown for a plain `disconnected` transition or for repeated
 * One row per profile, sorted by name, with a status dot:
   green connected, amber busy, red failed/unavailable, grey disconnected.
 * The daemon's own state and failure message are shown above the list.
-* `Add profile` opens a sheet for the name, gateway URL, realm and username.
-  Each field is validated in the view model (required name, unique name, an
-  http(s) URL with a host, realm and username), Save stays disabled until the
-  draft is valid, and saving writes through `ProfileStore`, refreshes the list,
-  selects the new profile and returns to it. No password or token field exists:
-  profiles store no secrets. Editing an existing profile and deleting from the
-  GUI are not included in this pass (use `aevan profile rm`).
+* **Add profile** opens a sheet for the name, gateway URL, realm and username.
+  Each field is validated in the view model (non-empty unique name, an http(s)
+  URL with a host, non-empty realm and non-empty username for non-interactive
+  login), Save stays disabled until the draft is valid, and saving writes
+  through `ProfileStore`, refreshes the list, selects the new profile and
+  returns to it. No password or token field exists: profiles store no secrets.
+* **Edit** opens the same sheet pre-filled with the stored name, gateway URL,
+  realm and username. Saving writes through the same `ProfileStore` path,
+  refreshes the list in place and keeps the edited profile selected. A name
+  already used by a different profile is rejected on the name field; saving
+  under its own current name is allowed. If the edited profile is the connected
+  one, the sheet says changes apply to the next connection and the live tunnel
+  is not touched. No password, token or TOTP secret is shown or stored here.
+* **Delete** asks `Delete “<name>”? This cannot be undone.` with Delete and
+  Cancel. Confirming removes the profile from the store, refreshes the list,
+  and clears the selection and shows the empty state when the deleted profile
+  was the selected one. Deleting the profile whose tunnel is connected is
+  refused with a message to disconnect first; nothing is removed. Cancel leaves
+  the store untouched.
 * `Connect` opens the connect sheet for that profile; `Settings` opens that
   profile's settings.
 * `Retry` performs one `status` probe. `Refresh` reloads `profiles.toml`.
@@ -399,7 +411,8 @@ every build host; the Windows task path keeps its existing `schtasks` tests.
 * No silent daemon auto-start. `aevan` with no subcommand may start the daemon,
   and the explicit **Start daemon** action may start it, but opening
   `aevan-gui` never does.
-* No profile creation/editing/removal; use `aevan profile add`.
+* No profile secrets: adding, editing and deleting touch only the non-secret
+  profile store (`profiles.toml`), never a password, token or TOTP secret.
 * No log streaming. The GUI only reads the tail of its own owner-only
   `daemon-start.log` to name a failed daemon start.
 * No tray on Linux (see above). macOS has a menu-bar item and delivers
@@ -436,6 +449,12 @@ every build host; the Windows task path keeps its existing `schtasks` tests.
 network or elevation:
 
 * a status poll updates bytes and uptime;
+* profile editing pre-fills exactly the stored values, rejects a rename onto
+  another profile's name, and accepts saving under its own current name;
+* profile deletion requires confirmation, cancel leaves the store untouched,
+  confirming removes the profile and clears a deleted selection, and deleting
+  the connected profile is refused with the disconnect-first message;
+* a failed profile-store write becomes an error banner rather than a panic;
 * a daemon failure moves to `Failed` with the message;
 * a reach failure moves to `DaemonUnavailable` with the message;
 * a connect submission clears the secret buffers and redacts `Debug`;
