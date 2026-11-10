@@ -31,6 +31,10 @@ const SUCCESS: Color = Color::from_rgb(0.28, 0.68, 0.36);
 /// A short banner colour for neutral state.
 const MUTED: Color = Color::from_rgb(0.55, 0.60, 0.66);
 
+/// The GUI action shown wherever the daemon is not reachable.
+const DAEMON_START_GUIDANCE: &str =
+    "Use Start daemon in Settings; Aevan asks for administrator approval once. Connect only talks to the daemon socket.";
+
 #[derive(Debug, Clone)]
 pub enum Message {
     Tick,
@@ -100,6 +104,10 @@ pub enum Message {
     /// The explicit "Start daemon (Administrator)" action.
     StartDaemon,
     StartDaemonFinished(Result<(), String>),
+    /// Copy a banner or error block to the clipboard.
+    CopyText(String),
+    /// Clear a brief "Copied" confirmation when its generation is current.
+    CopyExpired(u64),
     /// Quit from the tray or Cmd+Q.
     QuitRequested,
     QuitAnyway,
@@ -503,6 +511,20 @@ impl App {
                 return window::set_mode(id, window::Mode::Hidden);
             }
             Message::InstanceShowRequested => return focus_window(),
+            Message::CopyText(text) => {
+                let generation = self.vm.mark_copied(text.clone());
+                return Task::batch([
+                    iced::clipboard::write::<Message>(text),
+                    Task::perform(
+                        async move {
+                            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                            generation
+                        },
+                        Message::CopyExpired,
+                    ),
+                ]);
+            }
+            Message::CopyExpired(generation) => self.vm.clear_copied(generation),
             Message::StartDaemon => {
                 if self.vm.begin_daemon_start() {
                     return start_daemon_task();
@@ -610,13 +632,14 @@ impl App {
             Screen::AddProfile => self.add_profile_view(),
         };
 
-        let banner = self
-            .vm
-            .notice
-            .as_ref()
-            .map(|notice| banner(notice, WARNING));
+        let banner = self.vm.notice_copy_text().map(|notice| {
+            let copied = self.vm.is_copied(&notice);
+            banner(&notice, WARNING, copied)
+        });
 
         let quit_confirmation = self.vm.quit_confirmation.as_ref().map(|reason| {
+            let copy_text =
+                format!("Disconnect failed: {reason}\n\nQuit anyway? The tunnel may still be up.");
             container(
                 column![
                     text(format!("Disconnect failed: {reason}"))
@@ -634,6 +657,8 @@ impl App {
                             .on_press(Message::CancelQuit)
                             .style(button::secondary)
                             .padding([6, 14]),
+                        Space::new().width(Length::Fill),
+                        copy_button(&copy_text, self.vm.is_copied(&copy_text)),
                     ]
                     .spacing(8),
                 ]
@@ -645,6 +670,7 @@ impl App {
         });
 
         let delete_confirmation = self.vm.delete_confirmation_label().map(|message| {
+            let copy_text = message.clone();
             container(
                 column![
                     text(message).size(16).color(DANGER),
@@ -657,6 +683,8 @@ impl App {
                             .on_press(Message::CancelDeleteProfile)
                             .style(button::secondary)
                             .padding([6, 14]),
+                        Space::new().width(Length::Fill),
+                        copy_button(&copy_text, self.vm.is_copied(&copy_text)),
                     ]
                     .spacing(8),
                 ]
@@ -779,72 +807,92 @@ impl App {
         }
 
         let daemon_banner = match &self.vm.state {
-            ConnectionState::DaemonUnavailable { message } => Some(
-                container(
-                    column![
-                    text("Daemon unavailable").size(16).color(DANGER),
-                    text(message).size(13),
-                    text(
-                        "Use Start daemon in Settings; Aevan asks for administrator approval once. Connect only talks to the daemon socket."
+            ConnectionState::DaemonUnavailable { message } => {
+                let copy_text = format!("Daemon unavailable\n{message}\n{DAEMON_START_GUIDANCE}");
+                Some(
+                    container(
+                        column![
+                            row![
+                                text("Daemon unavailable").size(16).color(DANGER),
+                                Space::new().width(Length::Fill),
+                                copy_button(&copy_text, self.vm.is_copied(&copy_text)),
+                            ]
+                            .align_y(Alignment::Start),
+                            text(message).size(13),
+                            text(DAEMON_START_GUIDANCE).size(13).color(MUTED),
+                            row![button(text("Retry").size(14))
+                                .on_press(Message::RetryDaemon)
+                                .style(button::secondary)
+                                .padding([6, 14])]
+                            .spacing(8),
+                        ]
+                        .spacing(4),
                     )
-                    .size(13)
-                    .color(MUTED),
-                    row![button(text("Retry").size(14))
-                        .on_press(Message::RetryDaemon)
-                        .style(button::secondary)
-                        .padding([6, 14])]
-                    .spacing(8),
-                ]
-                    .spacing(4),
+                    .padding(12)
+                    .width(Length::Fill)
+                    .style(error_card)
+                    .into(),
                 )
-                .padding(12)
-                .width(Length::Fill)
-                .style(error_card)
-                .into(),
-            ),
-            ConnectionState::RecoveryIncomplete { report } => Some(
-                container(
-                    column![
-                        text("Journal recovery incomplete").size(16).color(WARNING),
-                        text(format!(
-                            "rolled back {} · already absent {} · failed {}",
-                            report.rolled_back,
-                            report.skipped_absent,
-                            report.failed()
-                        ))
-                        .size(13),
-                        text(
-                            "The journal is retained until every step can be undone.                              Retry recovery after fixing the platform state."
-                        )
-                        .size(13)
-                        .color(MUTED),
-                        column(
-                            report
-                                .failures
-                                .iter()
-                                .map(|failure| {
-                                    text(format!("{}: {}", failure.step, failure.reason))
-                                        .size(12)
-                                        .color(MUTED)
-                                        .into()
-                                })
-                                .collect::<Vec<Element<'_, Message>>>()
-                        )
-                        .spacing(2),
-                        row![button(text("Retry recovery").size(14))
-                            .on_press(Message::RetryRecovery)
-                            .style(button::secondary)
-                            .padding([6, 14])],
-                    ]
-                    .spacing(6),
+            }
+            ConnectionState::RecoveryIncomplete { report } => {
+                let guidance = "The journal is retained until every step can be undone. Retry recovery after fixing the platform state.";
+                let failures = report
+                    .failures
+                    .iter()
+                    .map(|failure| format!("{}: {}", failure.step, failure.reason))
+                    .collect::<Vec<_>>();
+                let mut copy_text = format!(
+                    "Journal recovery incomplete\nrolled back {} · already absent {} · failed {}\n{guidance}",
+                    report.rolled_back,
+                    report.skipped_absent,
+                    report.failed()
+                );
+                if !failures.is_empty() {
+                    copy_text.push('\n');
+                    copy_text.push_str(&failures.join("\n"));
+                }
+                Some(
+                    container(
+                        column![
+                            row![
+                                text("Journal recovery incomplete").size(16).color(WARNING),
+                                Space::new().width(Length::Fill),
+                                copy_button(&copy_text, self.vm.is_copied(&copy_text)),
+                            ]
+                            .align_y(Alignment::Start),
+                            text(format!(
+                                "rolled back {} · already absent {} · failed {}",
+                                report.rolled_back,
+                                report.skipped_absent,
+                                report.failed()
+                            ))
+                            .size(13),
+                            text(guidance).size(13).color(MUTED),
+                            column(
+                                failures
+                                    .iter()
+                                    .map(|failure| {
+                                        text(failure.clone()).size(12).color(MUTED).into()
+                                    })
+                                    .collect::<Vec<Element<'_, Message>>>()
+                            )
+                            .spacing(2),
+                            row![button(text("Retry recovery").size(14))
+                                .on_press(Message::RetryRecovery)
+                                .style(button::secondary)
+                                .padding([6, 14])],
+                        ]
+                        .spacing(6),
+                    )
+                    .padding(12)
+                    .width(Length::Fill)
+                    .style(warning_card)
+                    .into(),
                 )
-                .padding(12)
-                .width(Length::Fill)
-                .style(warning_card)
-                .into(),
-            ),
+            }
             ConnectionState::Failed { reason } => {
-                Some(banner(&format!("Last attempt failed: {reason}"), DANGER))
+                let message = format!("Last attempt failed: {reason}");
+                Some(banner(&message, DANGER, self.vm.is_copied(&message)))
             }
             _ => None,
         };
@@ -916,7 +964,7 @@ impl App {
                 .width(Length::Fill),
         );
         if let Some(error) = &self.vm.add_profile_errors.name {
-            form = form.push(text(error.clone()).size(12).color(DANGER));
+            form = form.push(error_line(error, self.vm.is_copied(error)));
         }
 
         form = form.push(text("Gateway URL").size(12).color(MUTED)).push(
@@ -927,7 +975,7 @@ impl App {
                 .width(Length::Fill),
         );
         if let Some(error) = &self.vm.add_profile_errors.url {
-            form = form.push(text(error.clone()).size(12).color(DANGER));
+            form = form.push(error_line(error, self.vm.is_copied(error)));
         }
 
         form = form
@@ -940,7 +988,7 @@ impl App {
                     .width(Length::Fill),
             );
         if let Some(error) = &self.vm.add_profile_errors.realm {
-            form = form.push(text(error.clone()).size(12).color(DANGER));
+            form = form.push(error_line(error, self.vm.is_copied(error)));
         }
         form = form.push(
             text("The gateway advertises its realm; leave this empty to detect it automatically.")
@@ -956,7 +1004,7 @@ impl App {
                 .width(Length::Fill),
         );
         if let Some(error) = &self.vm.add_profile_errors.username {
-            form = form.push(text(error.clone()).size(12).color(DANGER));
+            form = form.push(error_line(error, self.vm.is_copied(error)));
         }
 
         form = form
@@ -970,7 +1018,7 @@ impl App {
             );
 
         if let Some(error) = &self.vm.add_profile_error {
-            form = form.push(text(error.clone()).size(12).color(DANGER));
+            form = form.push(error_line(error, self.vm.is_copied(error)));
         }
 
         let actions = row![
@@ -1046,28 +1094,31 @@ impl App {
 
         match &self.vm.state {
             ConnectionState::Failed { reason } => {
-                fields = fields.push(text(format!("failed: {reason}")).size(13).color(DANGER));
+                let message = format!("failed: {reason}");
+                fields = fields.push(copyable_line(&message, DANGER, self.vm.is_copied(&message)));
             }
             ConnectionState::DaemonUnavailable { message } => {
-                fields = fields
-                    .push(text(message).size(13).color(DANGER))
-                    .push(
-                        text(
-                            "Use Start daemon in Settings; Aevan asks for administrator approval once. Connect only talks to the daemon socket.",
-                        )
-                        .size(12)
-                        .color(MUTED),
-                    );
+                let copy_text = format!("{message}\n{DAEMON_START_GUIDANCE}");
+                fields = fields.push(
+                    column![
+                        row![
+                            text(message).size(13).color(DANGER).width(Length::Fill),
+                            copy_button(&copy_text, self.vm.is_copied(&copy_text)),
+                        ]
+                        .spacing(8)
+                        .align_y(Alignment::Start),
+                        text(DAEMON_START_GUIDANCE).size(12).color(MUTED),
+                    ]
+                    .spacing(2),
+                );
             }
             ConnectionState::RecoveryIncomplete { report } => {
-                fields = fields.push(
-                    text(format!(
-                        "journal recovery incomplete (failed {})",
-                        report.failed()
-                    ))
-                    .size(13)
-                    .color(WARNING),
-                );
+                let message = format!("journal recovery incomplete (failed {})", report.failed());
+                fields = fields.push(copyable_line(
+                    &message,
+                    WARNING,
+                    self.vm.is_copied(&message),
+                ));
             }
             _ => {}
         }
@@ -1232,14 +1283,10 @@ impl App {
         if let Some(state) = &self.daemon_service {
             view = view.push(detail_row("Daemon service", state.label()));
             if state.requires_approval() {
+                let message =
+                    "Approve Aevan in System Settings > Login Items & Extensions, then try again.";
                 view = view
-                    .push(
-                        text(
-                            "Approve Aevan in System Settings > Login Items & Extensions, then try again.",
-                        )
-                        .size(12)
-                        .color(WARNING),
-                    )
+                    .push(copyable_line(message, WARNING, self.vm.is_copied(message)))
                     .push(
                         button(text("Open Login Items & Extensions").size(14))
                             .on_press(Message::OpenLoginItemsSettings)
@@ -1283,7 +1330,7 @@ impl App {
         if let Some(enrolled) = enrolled {
             view = view.push(text("TOTP enrolment").size(17));
             if let Some(error) = &self.vm.totp_error {
-                view = view.push(text(error.clone()).size(12).color(DANGER));
+                view = view.push(error_line(error, self.vm.is_copied(error)));
             }
             if enrolled {
                 view = view.push(
@@ -1425,8 +1472,8 @@ fn realm_display(realm: &str) -> String {
     }
 }
 
-fn banner(message: &str, color: Color) -> Element<'static, Message> {
-    container(text(message.to_owned()).size(13).color(color))
+fn banner(message: &str, color: Color, copied: bool) -> Element<'static, Message> {
+    container(copyable_line(message, color, copied))
         .padding(10)
         .width(Length::Fill)
         .style(move |_theme: &Theme| container::Style {
@@ -1441,6 +1488,38 @@ fn banner(message: &str, color: Color) -> Element<'static, Message> {
             ..container::Style::default()
         })
         .into()
+}
+
+/// A text line with a Copy button that writes the same text to the clipboard.
+fn copyable_line(message: &str, color: Color, copied: bool) -> Element<'static, Message> {
+    row![
+        text(message.to_owned())
+            .size(13)
+            .color(color)
+            .width(Length::Fill),
+        copy_button(message, copied),
+    ]
+    .spacing(8)
+    .align_y(Alignment::Start)
+    .into()
+}
+
+/// An inline validation error with a Copy button.
+fn error_line(message: &str, copied: bool) -> Element<'static, Message> {
+    copyable_line(message, DANGER, copied)
+}
+
+/// The Copy button, or a short "Copied" confirmation in its place.
+fn copy_button(message: &str, copied: bool) -> Element<'static, Message> {
+    if copied {
+        text("Copied").size(12).color(SUCCESS).into()
+    } else {
+        button(text("Copy").size(12))
+            .on_press(Message::CopyText(message.to_owned()))
+            .style(button::text)
+            .padding([2, 6])
+            .into()
+    }
 }
 
 fn card(_theme: &Theme) -> container::Style {

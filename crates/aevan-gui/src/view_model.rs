@@ -772,6 +772,11 @@ pub struct ViewModel {
     pub endpoint: String,
     /// Non-state notice (for example a missing profile or empty password).
     pub notice: Option<String>,
+    /// The exact banner text last written to the clipboard, if any.
+    pub copied_text: Option<String>,
+    /// Generation of the latest copy, so an older timer cannot clear a newer
+    /// "Copied" confirmation.
+    copy_generation: u64,
     /// Fields typed into the "Add profile" sheet.
     pub add_profile: ProfileDraft,
     /// The profile being edited, or `None` when the sheet is adding a new one.
@@ -847,6 +852,8 @@ impl ViewModel {
             log_level: LogLevel::parse("info"),
             endpoint,
             notice: None,
+            copied_text: None,
+            copy_generation: 0,
             add_profile: ProfileDraft::default(),
             editing_profile: None,
             add_profile_errors: ProfileDraftErrors::default(),
@@ -1645,6 +1652,30 @@ impl ViewModel {
         self.notice = Some(message.into());
     }
 
+    /// The exact text a Copy button must put on the clipboard for the notice.
+    pub fn notice_copy_text(&self) -> Option<String> {
+        self.notice.clone()
+    }
+
+    /// Record that `text` was copied and return this copy's generation.
+    pub fn mark_copied(&mut self, text: impl Into<String>) -> u64 {
+        self.copy_generation = self.copy_generation.wrapping_add(1);
+        self.copied_text = Some(text.into());
+        self.copy_generation
+    }
+
+    /// Clear the "Copied" confirmation only if no newer copy replaced it.
+    pub fn clear_copied(&mut self, generation: u64) {
+        if generation == self.copy_generation {
+            self.copied_text = None;
+        }
+    }
+
+    /// Whether a banner currently shows the brief "Copied" confirmation.
+    pub fn is_copied(&self, text: &str) -> bool {
+        self.copied_text.as_deref() == Some(text)
+    }
+
     /// Record the result of the read-only autostart status query.
     pub fn apply_autostart_status(&mut self, result: Result<TaskState, String>) {
         self.autostart = match result {
@@ -2267,6 +2298,30 @@ mod tests {
             assert!(!shown.contains("aevand"), "{shown}");
             assert!(!shown.contains("run aevan"), "{shown}");
         }
+    }
+
+    #[test]
+    fn the_copy_text_equals_the_displayed_notice_including_the_log_tail() {
+        let mut vm = model();
+        let message = crate::start_log::with_tail(
+            "macOS daemon registration (SMAppService, then legacy fallback)",
+            vec![
+                "exit: 1".into(),
+                "stderr: ServiceManagement error 1: Operation not permitted".into(),
+            ],
+        );
+        vm.daemon_start_failed(message);
+
+        let displayed = vm.notice.clone().expect("notice");
+        assert!(displayed.contains("last 2 lines of the daemon-start log"));
+        assert!(displayed.contains("Operation not permitted"));
+        assert_eq!(vm.notice_copy_text().as_deref(), Some(displayed.as_str()));
+
+        let generation = vm.mark_copied(displayed.clone());
+        assert!(vm.is_copied(&displayed));
+        assert_eq!(vm.copied_text.as_deref(), Some(displayed.as_str()));
+        vm.clear_copied(generation);
+        assert!(!vm.is_copied(&displayed));
     }
 
     #[test]
