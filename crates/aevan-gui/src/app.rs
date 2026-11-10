@@ -590,22 +590,14 @@ impl App {
                     text("Daemon unavailable").size(16).color(DANGER),
                     text(message).size(13),
                     text(
-                        "Start the daemon with `aevand` (elevated on Windows or macOS), or use the Administrator action below."
+                        "Start the daemon with `aevand`, or use the explicit start action in Settings. Connect only talks to the daemon socket."
                     )
                     .size(13)
                     .color(MUTED),
-                    row![
-                        button(text("Start daemon (Administrator)").size(14))
-                            .on_press_maybe(
-                                (!self.vm.daemon_start_busy).then_some(Message::StartDaemon)
-                            )
-                            .style(button::primary)
-                            .padding([6, 14]),
-                        button(text("Retry").size(14))
-                            .on_press(Message::RetryDaemon)
-                            .style(button::secondary)
-                            .padding([6, 14]),
-                    ]
+                    row![button(text("Retry").size(14))
+                        .on_press(Message::RetryDaemon)
+                        .style(button::secondary)
+                        .padding([6, 14])]
                     .spacing(8),
                 ]
                     .spacing(4),
@@ -844,18 +836,10 @@ impl App {
                     .push(text(message).size(13).color(DANGER))
                     .push(
                         text(
-                            "Start `aevand` (elevated on Windows or macOS), or use the Administrator action below.",
+                            "Connect only talks to the daemon socket. Start `aevand`, or use the explicit start action in Settings.",
                         )
                         .size(12)
                         .color(MUTED),
-                    )
-                    .push(
-                        button(text("Start daemon (Administrator)").size(14))
-                            .on_press_maybe(
-                                (!self.vm.daemon_start_busy).then_some(Message::StartDaemon),
-                            )
-                            .style(button::primary)
-                            .padding([6, 14]),
                     );
             }
             ConnectionState::RecoveryIncomplete { report } => {
@@ -1027,6 +1011,25 @@ impl App {
             );
         }
         view = view.push(detail_row("Daemon endpoint", &self.vm.endpoint));
+        if matches!(self.vm.state, ConnectionState::DaemonUnavailable { .. }) {
+            view = view
+                .push(text("Daemon").size(17))
+                .push(
+                    text(
+                        "Starting the daemon needs one administrator prompt on Windows and macOS. It is never started while connecting.",
+                    )
+                    .size(12)
+                    .color(MUTED),
+                )
+                .push(
+                    button(text("Start daemon (Administrator)").size(14))
+                        .on_press_maybe(
+                            (!self.vm.daemon_start_busy).then_some(Message::StartDaemon),
+                        )
+                        .style(button::primary)
+                        .padding([6, 14]),
+                );
+        }
 
         if let Some(enrolled) = enrolled {
             view = view.push(text("TOTP enrolment").size(17));
