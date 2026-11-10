@@ -106,6 +106,14 @@ pub enum Message {
     AutostartChanged(Result<aevan_daemon::autostart::TaskState, String>),
     #[cfg(target_os = "macos")]
     NotificationAuthorization(crate::notifications::Authorization),
+    #[cfg(target_os = "macos")]
+    DaemonServiceStatused(Result<crate::relaunch::ServiceState, String>),
+    #[cfg(target_os = "macos")]
+    UnregisterDaemon,
+    #[cfg(target_os = "macos")]
+    UnregisterDaemonFinished(Result<(), String>),
+    #[cfg(target_os = "macos")]
+    OpenLoginItemsSettings,
 }
 
 /// The iced application state.
@@ -115,6 +123,8 @@ pub struct App {
     notifier: Box<dyn Notifier>,
     tray: tray::Handle,
     tray_state: Option<TrayMenuState>,
+    #[cfg(target_os = "macos")]
+    daemon_service: Option<crate::relaunch::ServiceState>,
 }
 
 /// Run the native window.
@@ -155,6 +165,7 @@ impl App {
                 },
                 Message::NotificationAuthorization,
             ));
+            tasks.push(daemon_service_status_task());
         }
         let mut app = Self {
             vm,
@@ -162,6 +173,8 @@ impl App {
             notifier: Box::new(DesktopNotifier),
             tray,
             tray_state: None,
+            #[cfg(target_os = "macos")]
+            daemon_service: None,
         };
         app.sync_tray();
         (app, Task::batch(tasks))
@@ -440,16 +453,24 @@ impl App {
                     return start_daemon_task();
                 }
             }
-            Message::StartDaemonFinished(result) => match result {
-                Ok(()) => {
-                    self.vm.daemon_started();
-                    if !self.poll_in_flight {
-                        self.poll_in_flight = true;
-                        return poll_status_task();
+            Message::StartDaemonFinished(result) => {
+                let mut tasks = Vec::new();
+                match result {
+                    Ok(()) => {
+                        self.vm.daemon_started();
+                        if !self.poll_in_flight {
+                            self.poll_in_flight = true;
+                            tasks.push(poll_status_task());
+                        }
                     }
+                    Err(message) => self.vm.daemon_start_failed(message),
                 }
-                Err(message) => self.vm.daemon_start_failed(message),
-            },
+                #[cfg(target_os = "macos")]
+                tasks.push(daemon_service_status_task());
+                if !tasks.is_empty() {
+                    return Task::batch(tasks);
+                }
+            }
             Message::QuitRequested => return self.begin_quit(),
             Message::QuitAnyway => {
                 if self.vm.quit_anyway() == QuitPlan::Exit {
@@ -477,6 +498,25 @@ impl App {
                     );
                 }
             }
+            #[cfg(target_os = "macos")]
+            Message::DaemonServiceStatused(result) => {
+                self.daemon_service = Some(match result {
+                    Ok(state) => state,
+                    Err(error) => crate::relaunch::ServiceState::Unavailable(error),
+                });
+            }
+            #[cfg(target_os = "macos")]
+            Message::UnregisterDaemon => return unregister_daemon_task(),
+            #[cfg(target_os = "macos")]
+            Message::UnregisterDaemonFinished(result) => {
+                self.vm.notice = Some(match result {
+                    Ok(()) => "Removed the Aevan daemon registration.".to_owned(),
+                    Err(error) => error,
+                });
+                return daemon_service_status_task();
+            }
+            #[cfg(target_os = "macos")]
+            Message::OpenLoginItemsSettings => daemon_bridge::open_login_items(),
         }
         Task::none()
     }
@@ -1067,18 +1107,50 @@ impl App {
             );
         }
         view = view.push(detail_row("Daemon endpoint", &self.vm.endpoint));
+        #[cfg(target_os = "macos")]
+        if let Some(state) = &self.daemon_service {
+            view = view.push(detail_row("Daemon service", state.label()));
+            if state.requires_approval() {
+                view = view
+                    .push(
+                        text(
+                            "Approve Aevan in System Settings > Login Items & Extensions, then try again.",
+                        )
+                        .size(12)
+                        .color(WARNING),
+                    )
+                    .push(
+                        button(text("Open Login Items & Extensions").size(14))
+                            .on_press(Message::OpenLoginItemsSettings)
+                            .style(button::secondary)
+                            .padding([6, 14]),
+                    );
+            }
+            if state.is_registered() {
+                view = view.push(
+                    button(text("Unregister daemon").size(14))
+                        .on_press(Message::UnregisterDaemon)
+                        .style(button::secondary)
+                        .padding([6, 14]),
+                );
+            }
+        }
         if matches!(self.vm.state, ConnectionState::DaemonUnavailable { .. }) {
+            let daemon_help = if cfg!(target_os = "macos") {
+                "Starting the daemon registers the bundled LaunchDaemon with ServiceManagement. macOS may ask you to approve it in System Settings > Login Items & Extensions; it is never started while connecting."
+            } else {
+                "Starting the daemon needs one administrator prompt on Windows. It is never started while connecting."
+            };
+            let start_label = if cfg!(target_os = "macos") {
+                "Start daemon"
+            } else {
+                "Start daemon (Administrator)"
+            };
             view = view
                 .push(text("Daemon").size(17))
+                .push(text(daemon_help).size(12).color(MUTED))
                 .push(
-                    text(
-                        "Starting the daemon needs one administrator prompt on Windows and macOS. It is never started while connecting.",
-                    )
-                    .size(12)
-                    .color(MUTED),
-                )
-                .push(
-                    button(text("Start daemon (Administrator)").size(14))
+                    button(text(start_label).size(14))
                         .on_press_maybe(
                             (!self.vm.daemon_start_busy).then_some(Message::StartDaemon),
                         )
@@ -1466,6 +1538,30 @@ fn autostart_change_task(enabled: bool) -> Task<Message> {
     )
 }
 
+#[cfg(target_os = "macos")]
+fn daemon_service_status_task() -> Task<Message> {
+    Task::perform(
+        async {
+            tokio::task::spawn_blocking(daemon_bridge::daemon_service_status)
+                .await
+                .unwrap_or_else(|error| Err(format!("the daemon-service worker stopped: {error}")))
+        },
+        Message::DaemonServiceStatused,
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn unregister_daemon_task() -> Task<Message> {
+    Task::perform(
+        async {
+            tokio::task::spawn_blocking(daemon_bridge::unregister_daemon_service)
+                .await
+                .unwrap_or_else(|error| Err(format!("the daemon-service worker stopped: {error}")))
+        },
+        Message::UnregisterDaemonFinished,
+    )
+}
+
 /// Stop a daemon this GUI started, clean up the single-instance endpoint, then
 /// exit.
 ///
@@ -1533,6 +1629,8 @@ mod tests {
             notifier: Box::new(crate::notifications::RecordingNotifier::default()),
             tray: tray::Handle::for_test(),
             tray_state: None,
+            #[cfg(target_os = "macos")]
+            daemon_service: None,
         }
     }
 
@@ -1724,7 +1822,7 @@ mod tests {
             for needle in [
                 "Command::new",
                 "std::process",
-                "osascript",
+                concat!("osa", "script"),
                 "launchctl",
                 "webbrowser",
                 "notify_rust",
@@ -1747,6 +1845,7 @@ mod tests {
         for source in [
             include_str!("app.rs"),
             include_str!("daemon_bridge.rs"),
+            include_str!("macos_service.rs"),
             include_str!("notifications.rs"),
             include_str!("view_model.rs"),
             include_str!("relaunch.rs"),

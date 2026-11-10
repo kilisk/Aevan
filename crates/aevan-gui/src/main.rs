@@ -15,8 +15,10 @@ mod app;
 mod console;
 mod daemon_bridge;
 mod instance;
+#[cfg(target_os = "macos")]
+mod macos_service;
 mod notifications;
-// The relaunch decision and its owner-only start log are compiled and tested
+// The service decision and its owner-only start log are compiled and tested
 // everywhere; only the macOS daemon path calls them in the application.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod relaunch;
@@ -37,10 +39,11 @@ aevan-gui — native client for the aevand daemon
 Usage: aevan-gui [OPTIONS]
 
 Options:
-      --headless  Print the resolved view-model state and exit without a window
-      --json      Machine-readable output (with --headless)
-  -V, --version   Print the version and exit
-  -h, --help      Print this help and exit
+      --headless           Print the resolved view-model state and exit without a window
+      --json               Machine-readable output (with --headless)
+      --unregister-daemon  Remove the macOS daemon registration and exit
+  -V, --version            Print the version and exit
+  -h, --help               Print this help and exit
 
 The GUI never authenticates itself: it sends one connect request to aevand over
 the local control socket and displays the status the daemon reports.
@@ -50,6 +53,7 @@ the local control socket and displays the status the daemon reports.
 struct Args {
     headless: bool,
     json: bool,
+    unregister_daemon: bool,
 }
 
 fn main() -> ExitCode {
@@ -65,6 +69,10 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+
+    if args.unregister_daemon {
+        return unregister_daemon();
+    }
 
     if args.headless {
         return headless(args.json);
@@ -126,10 +134,36 @@ fn parse_args() -> Result<Args, String> {
             }
             "--headless" => args.headless = true,
             "--json" => args.json = true,
+            "--unregister-daemon" => args.unregister_daemon = true,
             other => return Err(format!("unknown argument '{other}'")),
         }
     }
     Ok(args)
+}
+
+/// Remove the macOS daemon registration through ServiceManagement.
+///
+/// The uninstaller calls this before deleting the app bundle so the background
+/// item does not outlive the app. It is idempotent.
+fn unregister_daemon() -> ExitCode {
+    #[cfg(target_os = "macos")]
+    {
+        match daemon_bridge::unregister_daemon_service() {
+            Ok(()) => {
+                println!("aevan-gui: removed the daemon registration");
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("aevan-gui: cannot remove the daemon registration: {error}");
+                ExitCode::FAILURE
+            }
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        eprintln!("aevan-gui: --unregister-daemon is only available on macOS");
+        ExitCode::FAILURE
+    }
 }
 
 /// Print the resolved view-model state and exit.

@@ -11,11 +11,12 @@ use std::time::Duration;
 use aevan_core::{Profile, ProfileStore};
 use aevan_daemon::autostart::{self, TaskState};
 use aevan_daemon::client::{self, ClientError};
-#[cfg(target_os = "macos")]
-use aevan_daemon::elevate::StartOutcome;
 #[cfg(not(target_os = "macos"))]
 use aevan_daemon::elevate::{self, StartOutcome};
 use aevan_daemon::{Request, Response, StatusReport};
+
+#[cfg(target_os = "macos")]
+pub use crate::relaunch::ServiceState;
 
 use crate::view_model::{totp_account, ConnectCredentials, TotpEnrolment, KEYRING_SERVICE};
 
@@ -176,9 +177,9 @@ fn open_totp_store() -> Result<Box<dyn aevan_secrets::SecretStore>, String> {
 
 /// Start `aevand` beside this GUI, then wait for the control endpoint.
 ///
-/// macOS installs the system LaunchDaemon once (one native prompt) and reuses
-/// it afterwards; Windows keeps the single UAC elevation. Nothing is started
-/// silently: this is only called by the explicit start action.
+/// macOS registers the bundled LaunchDaemon with ServiceManagement once and
+/// reuses it afterwards; Windows keeps the single UAC elevation. Nothing is
+/// started silently: this is only called by the explicit start action.
 pub fn start_daemon() -> Result<(), String> {
     let executable = daemon_binary()?;
     start_daemon_beside(&executable).map_err(|message| {
@@ -190,53 +191,30 @@ pub fn start_daemon() -> Result<(), String> {
 }
 
 #[cfg(target_os = "macos")]
-fn start_daemon_beside(executable: &Path) -> Result<(), String> {
+fn start_daemon_beside(_executable: &Path) -> Result<(), String> {
     use aevan_daemon::launchd;
 
+    use crate::macos_service;
     use crate::relaunch::{self, RelaunchOps};
     use crate::start_log;
 
-    struct MacOps<'a> {
-        executable: &'a Path,
-    }
+    struct MacOps;
 
-    fn record(outcome: &aevan_daemon::elevate::ScriptOutcome) {
-        let _ = start_log::record_default(&outcome.command, outcome.exit_status, &outcome.stderr);
-    }
-
-    fn prompted_outcome(outcome: StartOutcome, action: &str) -> Result<(), String> {
-        match outcome {
-            StartOutcome::Started => Ok(()),
-            StartOutcome::Cancelled => Err(format!(
-                "{action} needs administrator approval; the prompt was dismissed"
-            )),
-            StartOutcome::Failed(message) => Err(message),
-        }
-    }
-
-    impl RelaunchOps for MacOps<'_> {
+    impl RelaunchOps for MacOps {
         fn socket_answers(&self) -> bool {
             client::request(&Request::status(), Some(STATUS_TIMEOUT)).is_ok()
         }
 
-        fn daemon_installed(&self) -> bool {
-            launchd::is_installed()
+        fn service_status(&self) -> Result<ServiceState, String> {
+            macos_service::status()
+        }
+
+        fn register(&self) -> Result<(), String> {
+            macos_service::register()
         }
 
         fn kickstart(&self) -> Result<(), String> {
             launchd::kickstart()
-        }
-
-        fn kickstart_elevated(&self) -> Result<(), String> {
-            let outcome = launchd::rearm_detailed();
-            record(&outcome);
-            prompted_outcome(outcome.outcome, "starting the Aevan daemon")
-        }
-
-        fn install_elevated(&self) -> Result<(), String> {
-            let outcome = launchd::install_detailed(self.executable);
-            record(&outcome);
-            prompted_outcome(outcome.outcome, "installing the Aevan daemon")
         }
 
         fn wait_ready(&self) -> Result<(), String> {
@@ -245,13 +223,43 @@ fn start_daemon_beside(executable: &Path) -> Result<(), String> {
         }
     }
 
-    let report = relaunch::relaunch(&MacOps { executable })?;
-    tracing::info!(
-        method = ?report.method,
-        prompted = report.prompted,
-        "daemon start finished"
-    );
-    Ok(())
+    match relaunch::relaunch(&MacOps) {
+        Ok(report) => {
+            let _ = start_log::record_default(
+                &format!("SMAppService daemon registration ({:?})", report.method),
+                None,
+                "",
+            );
+            tracing::info!(method = ?report.method, "daemon service start finished");
+            Ok(())
+        }
+        Err(error) => {
+            let _ = start_log::record_default(
+                &format!(
+                    "SMAppService daemon registration {}",
+                    macos_service::PLIST_NAME
+                ),
+                None,
+                &error,
+            );
+            Err(error)
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub fn daemon_service_status() -> Result<ServiceState, String> {
+    crate::macos_service::status()
+}
+
+#[cfg(target_os = "macos")]
+pub fn unregister_daemon_service() -> Result<(), String> {
+    crate::macos_service::unregister()
+}
+
+#[cfg(target_os = "macos")]
+pub fn open_login_items() {
+    crate::macos_service::open_login_items();
 }
 
 #[cfg(not(target_os = "macos"))]
