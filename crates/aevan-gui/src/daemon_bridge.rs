@@ -79,14 +79,15 @@ pub fn recover() -> Result<StatusReport, ClientError> {
     expect_status(response)
 }
 
-/// Read and decode the TOTP secret for a profile from the OS keyring.
+/// Read and decode the TOTP secret for a profile from the owner's secret store.
 ///
 /// A missing entry and an unavailable backend both mean "no TOTP enrolled".
-/// This function never logs or returns the encoded secret.
+/// Reading never spawns a process, opens a URL or asks for elevation. This
+/// function never logs or returns the encoded secret.
 pub fn totp_secret(profile: &str) -> Option<Vec<u8>> {
-    use aevan_secrets::{decode_base32, KeyringStore, SecretStore};
+    use aevan_secrets::decode_base32;
 
-    let store = KeyringStore::new();
+    let store = open_totp_store().ok()?;
     let account = totp_account(profile);
     match store.get(KEYRING_SERVICE, &account) {
         Ok(Some(secret)) => decode_base32(secret.expose()).ok(),
@@ -94,34 +95,75 @@ pub fn totp_secret(profile: &str) -> Option<Vec<u8>> {
     }
 }
 
-/// Write a validated TOTP secret to the OS keyring.
+/// Write a validated TOTP secret and verify that it round-trips.
 ///
-/// This is the only path the GUI uses to write secret material, and it writes
-/// only to the keyring. The returned decoded bytes feed the live countdown; the
-/// normalized base32 text is not kept in the view model afterwards.
+/// The stored document is read back immediately and a code is generated from
+/// the stored bytes; it must equal the code generated from the enrolled bytes.
+/// Every failure is returned as text so the Settings sheet can display it. The
+/// secret itself is never part of an error message.
 pub fn save_totp_secret(enrolment: TotpEnrolment) -> Result<(String, Vec<u8>), String> {
-    use aevan_secrets::{KeyringStore, Secret, SecretStore};
-
-    let profile = enrolment.profile().to_owned();
-    let mut store = KeyringStore::new();
-    store
-        .set(
-            KEYRING_SERVICE,
-            &totp_account(&profile),
-            Secret::new(enrolment.encoded().to_owned()),
-        )
-        .map_err(|error| error.to_string())?;
-    Ok((profile, enrolment.into_decoded()))
+    let mut store = open_totp_store()?;
+    save_totp_secret_into(store.as_mut(), enrolment, crate::view_model::now_unix())
 }
 
-/// Remove a profile's TOTP secret from the OS keyring.
-pub fn remove_totp_secret(profile: &str) -> Result<(), String> {
-    use aevan_secrets::{KeyringStore, SecretStore};
+fn save_totp_secret_into(
+    store: &mut dyn aevan_secrets::SecretStore,
+    enrolment: TotpEnrolment,
+    now: u64,
+) -> Result<(String, Vec<u8>), String> {
+    use aevan_secrets::{decode_base32, Secret, Totp};
 
-    let mut store = KeyringStore::new();
+    let profile = enrolment.profile().to_owned();
+    let encoded = enrolment.encoded().to_owned();
+    let decoded = enrolment.into_decoded();
+    let expected_code = Totp::default()
+        .code_at(&decoded, now)
+        .map_err(|_| "the secret is not valid base32".to_owned())?;
+
+    let account = totp_account(&profile);
+    store
+        .set(KEYRING_SERVICE, &account, Secret::new(encoded))
+        .map_err(|error| error.to_string())?;
+
+    let stored = store
+        .get(KEYRING_SERVICE, &account)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "the secret was not stored; the store returned no entry".to_owned())?;
+    let decoded = decode_base32(stored.expose())
+        .map_err(|_| "the stored secret is not valid base32".to_owned())?;
+    let stored_code = Totp::default()
+        .code_at(&decoded, now)
+        .map_err(|_| "the stored secret is not valid base32".to_owned())?;
+    if stored_code != expected_code {
+        return Err(
+            "the stored secret did not round-trip; the saved code does not match".to_owned(),
+        );
+    }
+    Ok((profile, decoded))
+}
+
+/// Remove a profile's TOTP secret from the owner's secret store.
+pub fn remove_totp_secret(profile: &str) -> Result<(), String> {
+    let mut store = open_totp_store()?;
     store
         .delete(KEYRING_SERVICE, &totp_account(profile))
         .map_err(|error| error.to_string())
+}
+
+/// Select the per-user TOTP backend.
+///
+/// Windows uses Credential Manager. macOS and Linux use the owner-only file
+/// backend because this build does not compile a native keyring backend there;
+/// the file's directory is 0700 and the file is 0600 on Unix.
+#[cfg(windows)]
+fn open_totp_store() -> Result<Box<dyn aevan_secrets::SecretStore>, String> {
+    Ok(Box::new(aevan_secrets::KeyringStore::new()))
+}
+
+#[cfg(not(windows))]
+fn open_totp_store() -> Result<Box<dyn aevan_secrets::SecretStore>, String> {
+    let path = aevan_core::paths::default_secrets_path().map_err(|error| error.to_string())?;
+    Ok(Box::new(aevan_secrets::FileStore::new(path)))
 }
 
 /// Start `aevand` beside this GUI, then wait for the control endpoint.
@@ -303,5 +345,124 @@ fn expect_status(response: Response) -> Result<StatusReport, ClientError> {
         Err(ClientError::Transport(response.error.unwrap_or_else(
             || "the daemon reported an error".to_owned(),
         )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+
+    use aevan_core::Profile;
+    use aevan_secrets::{decode_base32, FileStore, SecretStore, Totp};
+
+    use super::*;
+    use crate::view_model::ViewModel;
+
+    struct TempDir {
+        path: PathBuf,
+    }
+
+    impl TempDir {
+        fn new(label: &str) -> Self {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            use std::time::{SystemTime, UNIX_EPOCH};
+
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            let unique = NEXT.fetch_add(1, Ordering::Relaxed);
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or(0);
+            let path = std::env::temp_dir().join(format!(
+                "aevan-gui-secret-{label}-{}-{nanos}-{unique}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&path).expect("create temp dir");
+            Self { path }
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    fn enrolment() -> TotpEnrolment {
+        let mut store = ProfileStore::default();
+        let profile =
+            Profile::new("example", "https://vpn.example.net/realm", "realm").expect("profile");
+        store.add(profile).expect("add profile");
+        let mut vm = ViewModel::new(&store, "endpoint".into(), 0);
+        vm.select_for_settings("example", 0);
+        vm.set_totp_input("JBSWY3DPEHPK3PXP".into());
+        vm.validate_totp_input().expect("valid secret");
+        vm.take_totp_enrolment().expect("enrolment")
+    }
+
+    #[test]
+    fn saving_totp_round_trips_and_the_stored_secret_generates_a_code() {
+        let temp = TempDir::new("round-trip");
+        let path = temp.path().join("aevan").join("secrets.json");
+        let mut store = FileStore::new(&path);
+
+        let (profile, decoded) =
+            save_totp_secret_into(&mut store, enrolment(), 1_234).expect("save and verify");
+        assert_eq!(profile, "example");
+
+        let reloaded = FileStore::new(&path)
+            .get(KEYRING_SERVICE, &totp_account("example"))
+            .expect("reload")
+            .expect("stored");
+        let reloaded = decode_base32(reloaded.expose()).expect("decode stored secret");
+        assert_eq!(reloaded, decoded);
+
+        let expected = decode_base32("JBSWY3DPEHPK3PXP").expect("decode fixture");
+        assert_eq!(
+            Totp::default()
+                .code_at(&reloaded, 1_234)
+                .expect("stored code"),
+            Totp::default()
+                .code_at(&expected, 1_234)
+                .expect("fixture code")
+        );
+    }
+
+    #[test]
+    fn saving_the_same_profile_twice_replaces_the_secret() {
+        let temp = TempDir::new("replace");
+        let path = temp.path().join("secrets.json");
+        let mut store = FileStore::new(&path);
+        save_totp_secret_into(&mut store, enrolment(), 0).expect("first save");
+
+        let mut store = FileStore::new(&path);
+        let (_, decoded) =
+            save_totp_secret_into(&mut store, replacement_enrolment("GEZDGNBVGY3TQOJQ"), 0)
+                .expect("second save");
+        let reloaded = FileStore::new(&path)
+            .get(KEYRING_SERVICE, &totp_account("example"))
+            .expect("reload")
+            .expect("stored");
+        assert_eq!(
+            decode_base32(reloaded.expose()).expect("decode"),
+            decoded,
+            "the second save replaces the first cleanly"
+        );
+    }
+
+    fn replacement_enrolment(secret: &str) -> TotpEnrolment {
+        let mut store = ProfileStore::default();
+        let profile =
+            Profile::new("example", "https://vpn.example.net/realm", "realm").expect("profile");
+        store.add(profile).expect("add profile");
+        let mut vm = ViewModel::new(&store, "endpoint".into(), 0);
+        vm.select_for_settings("example", 0);
+        vm.set_totp_input(secret.into());
+        vm.validate_totp_input().expect("valid secret");
+        vm.take_totp_enrolment().expect("enrolment")
     }
 }

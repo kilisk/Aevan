@@ -11,5 +11,5 @@
 pub mod store;
 pub mod totp;
 
-pub use store::{KeyringStore, MemoryStore, Secret, SecretError, SecretStore};
+pub use store::{FileStore, KeyringStore, MemoryStore, Secret, SecretError, SecretStore};
 pub use totp::{decode_base32, hotp, Totp, TotpError, DEFAULT_DIGITS, DEFAULT_PERIOD};

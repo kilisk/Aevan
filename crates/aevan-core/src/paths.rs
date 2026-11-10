@@ -1,8 +1,9 @@
 //! Well-known locations for the profile store.
 //!
 //! The layout is intentionally boring and local: one TOML file under the
-//! per-user configuration directory. Secrets are never stored there; they
-//! belong to the OS keyring (`aevan-secrets`, wired up at M3).
+//! per-user configuration directory. Secrets are never stored in the profile
+//! file. Windows keeps a TOTP secret in Credential Manager; macOS and Linux use
+//! a separate owner-only file under the same configuration directory.
 
 use std::path::PathBuf;
 
@@ -10,6 +11,9 @@ use crate::{AevanError, AevanResult};
 
 /// File name of the profile store inside the configuration directory.
 pub const PROFILES_FILE: &str = "profiles.toml";
+
+/// File name of the owner-only secret store used on macOS and Linux.
+pub const SECRETS_FILE: &str = "secrets.json";
 
 /// Directory used for per-user configuration.
 pub fn config_dir() -> AevanResult<PathBuf> {
@@ -66,6 +70,11 @@ pub fn default_config_path() -> AevanResult<PathBuf> {
     default_profiles_path()
 }
 
+/// Full path of the owner-only secret store (`<config_dir>/secrets.json`).
+pub fn default_secrets_path() -> AevanResult<PathBuf> {
+    Ok(config_dir()?.join(SECRETS_FILE))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -79,6 +88,14 @@ mod tests {
                 // the error must be the typed configuration error, not a panic.
                 assert!(matches!(error, AevanError::Config(_)));
             }
+        }
+    }
+
+    #[test]
+    fn secrets_path_ends_with_the_expected_file() {
+        match default_secrets_path() {
+            Ok(path) => assert!(path.ends_with(SECRETS_FILE)),
+            Err(error) => assert!(matches!(error, AevanError::Config(_))),
         }
     }
 }

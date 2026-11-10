@@ -1202,7 +1202,7 @@ impl ViewModel {
         self.pending_totp_text = Some(Zeroizing::new(normalized));
         self.pending_totp_profile = Some(profile);
         self.notice = Some(
-            "Compare the code with your authenticator app, then save it to the OS keyring."
+            "Compare the code with your authenticator app, then save it to the secret store."
                 .to_owned(),
         );
         Ok(())
@@ -1256,14 +1256,14 @@ impl ViewModel {
     pub fn apply_totp_saved(&mut self, profile: &str, decoded: Vec<u8>) {
         self.set_totp_secret(profile, Some(decoded));
         self.clear_totp_entry();
-        self.notice = Some("TOTP secret saved to the OS keyring.".to_owned());
+        self.notice = Some("TOTP secret saved to the secret store.".to_owned());
     }
 
     /// Record a successful keyring removal and clear the countdown source.
     pub fn apply_totp_removed(&mut self, profile: &str) {
         self.set_totp_secret(profile, None);
         self.clear_totp_entry();
-        self.notice = Some("TOTP secret removed from the OS keyring.".to_owned());
+        self.notice = Some("TOTP secret removed from the secret store.".to_owned());
     }
 
     /// Closing the window only hides it: the daemon and tunnel stay untouched.

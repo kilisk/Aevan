@@ -690,7 +690,7 @@ impl App {
         let mut form = column![
             text("Add profile").size(22),
             text(
-                "Profiles hold no password or token. Aevan asks for credentials only when you connect, and secrets live in the OS keyring."
+                "Profiles hold no password or token. Aevan asks for credentials only when you connect, and secrets live in the owner-only secret store."
             )
             .size(12)
             .color(MUTED),
@@ -969,7 +969,7 @@ impl App {
                 view = view.push(detail_row(
                     "TOTP",
                     if profile.totp_enrolled {
-                        "enrolled in the keyring"
+                        "enrolled"
                     } else {
                         "not enrolled"
                     },
@@ -1035,24 +1035,27 @@ impl App {
             view = view.push(text("TOTP enrolment").size(17));
             if enrolled {
                 view = view.push(
-                    text("The secret is stored only in the OS keyring and is not shown again.")
-                        .size(12)
-                        .color(MUTED),
+                    text(
+                        "The secret is stored in the owner's secret store and is not shown again.",
+                    )
+                    .size(12)
+                    .color(MUTED),
                 );
                 view = view.push(
-                    button(text("Remove from keyring").size(14))
+                    button(text("Remove secret").size(14))
                         .on_press(Message::TotpRemove)
                         .style(button::danger)
                         .padding([6, 14]),
                 );
             } else {
                 view = view.push(
-                    text("Paste the base32 secret from your authenticator app. It is validated locally, shown only as a current code, then written to the OS keyring.")
+                    text("Paste the base32 secret from your authenticator app. It is validated locally, shown only as a current code, then written to the owner's secret store.")
                         .size(12)
                         .color(MUTED),
                 );
                 view = view.push(
                     text_input("base32 secret", &self.vm.totp_input)
+                        .id(FocusField::SettingsTotp.id())
                         .secure(true)
                         .on_input(|value| Message::TotpInput(SecretField::new(value)))
                         .padding(8)
@@ -1068,7 +1071,7 @@ impl App {
                             .push(text(countdown).size(12).color(WARNING))
                             .push(
                                 row![
-                                    button(text("Save to keyring").size(14))
+                                    button(text("Save secret").size(14))
                                         .on_press(Message::TotpSave)
                                         .style(button::primary)
                                         .padding([6, 14]),
@@ -1418,7 +1421,7 @@ fn totp_save_task(enrolment: TotpEnrolment) -> Task<Message> {
         async move {
             tokio::task::spawn_blocking(move || daemon_bridge::save_totp_secret(enrolment))
                 .await
-                .unwrap_or_else(|error| Err(format!("the keyring worker stopped: {error}")))
+                .unwrap_or_else(|error| Err(format!("the secret-store worker stopped: {error}")))
         },
         |result| match result {
             Ok((profile, secret)) => Message::TotpSaved {
@@ -1441,7 +1444,7 @@ fn totp_remove_task(profile: String) -> Task<Message> {
         async move {
             tokio::task::spawn_blocking(move || daemon_bridge::remove_totp_secret(&profile))
                 .await
-                .unwrap_or_else(|error| Err(format!("the keyring worker stopped: {error}")))
+                .unwrap_or_else(|error| Err(format!("the secret-store worker stopped: {error}")))
         },
         move |result| Message::TotpRemoved {
             profile: requested.clone(),
