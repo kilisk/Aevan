@@ -38,37 +38,75 @@ pub fn status() -> Result<(StatusReport, String), ClientError> {
     Ok((expect_status(answer.response)?, answer.endpoint))
 }
 
+/// One successful connect plus the realm detected on first use, if any.
+#[derive(Debug, Clone)]
+pub struct ConnectOutcome {
+    /// Daemon status after the connect.
+    pub status: StatusReport,
+    /// Realm written back into the store when it was auto-detected.
+    pub detected_realm: Option<String>,
+}
+
 /// Submit exactly one `connect` request.
+///
+/// An empty profile realm is detected from the gateway first and persisted, so
+/// the request carries the value the vendor client would have used. Detection
+/// is one credential-free `GET` and costs no login attempt.
 ///
 /// There is no read timeout, matching the CLI: the daemon returns when the
 /// single authentication attempt and the apply step have finished.
-pub fn connect(credentials: ConnectCredentials) -> Result<StatusReport, ClientError> {
-    let profile = local_profile(credentials.profile_name())?;
+pub fn connect(credentials: ConnectCredentials) -> Result<ConnectOutcome, ClientError> {
+    let (profile, detected_realm) = local_profile_with_realm(credentials.profile_name())?;
     let request = credentials.into_request(&profile.url, &profile.realm);
     let response = client::request(&request, None)?;
-    expect_status(response)
+    Ok(ConnectOutcome {
+        status: expect_status(response)?,
+        detected_realm,
+    })
 }
 
 /// Resolve a profile from this user's store before talking to the daemon.
 ///
 /// The daemon may run as root with a different (empty) store, so sending a
-/// name alone would fail there.
-fn local_profile(name: &str) -> Result<Profile, ClientError> {
+/// name alone would fail there. An empty realm is detected and saved here,
+/// where the owner's store lives.
+fn local_profile_with_realm(name: &str) -> Result<(Profile, Option<String>), ClientError> {
     let path = ProfileStore::default_path().map_err(|error| {
         ClientError::Transport(format!("cannot resolve the local profile store: {error}"))
     })?;
-    let store = ProfileStore::load(&path).map_err(|error| {
+    let mut store = ProfileStore::load(&path).map_err(|error| {
         ClientError::Transport(format!(
             "cannot read the local profile store {}: {error}",
             path.display()
         ))
     })?;
-    store.get(name).cloned().ok_or_else(|| {
+    let profile = store.get(name).cloned().ok_or_else(|| {
         ClientError::Transport(format!(
             "profile '{name}' was not found in {}; add it before connecting",
             path.display()
         ))
-    })
+    })?;
+    if profile.has_realm() {
+        return Ok((profile, None));
+    }
+
+    let url = aevan_proto::Url::parse(&profile.url)
+        .map_err(|error| ClientError::Transport(format!("invalid gateway URL: {error}")))?;
+    let realm = aevan_proto::detect_realm(&url)
+        .map_err(|error| ClientError::Transport(error.to_string()))?;
+
+    let mut detected = profile;
+    detected.realm = realm.clone();
+    detected
+        .validate()
+        .map_err(|error| ClientError::Transport(error.to_string()))?;
+    store
+        .upsert(detected.clone())
+        .map_err(|error| ClientError::Transport(error.to_string()))?;
+    store
+        .save(&path)
+        .map_err(|error| ClientError::Transport(error.to_string()))?;
+    Ok((detected, Some(realm)))
 }
 
 /// Submit one `disconnect` request.

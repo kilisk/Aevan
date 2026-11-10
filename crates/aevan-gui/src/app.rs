@@ -12,7 +12,7 @@ use aevan_core::ProfileStore;
 use aevan_daemon::client::ClientError;
 use aevan_daemon::StatusReport;
 
-use crate::daemon_bridge;
+use crate::daemon_bridge::{self, ConnectOutcome};
 use crate::notifications::{DesktopNotifier, Notifier};
 use crate::tray::{self, TrayEvent};
 use crate::view_model::{
@@ -67,7 +67,7 @@ pub enum Message {
     Password(SecretField),
     Token(SecretField),
     Connect,
-    ConnectFinished(Result<StatusReport, ClientError>),
+    ConnectFinished(Result<ConnectOutcome, ClientError>),
     Disconnect,
     DisconnectFinished(Result<StatusReport, ClientError>),
     RetryDaemon,
@@ -389,7 +389,14 @@ impl App {
                 }
             }
             Message::ConnectFinished(result) => match result {
-                Ok(status) => self.vm.apply_status(status),
+                Ok(outcome) => {
+                    let profile = outcome.status.profile.clone();
+                    let detected = outcome.detected_realm;
+                    self.vm.apply_status(outcome.status);
+                    if let (Some(profile), Some(realm)) = (profile, detected) {
+                        self.vm.apply_detected_realm(&profile, &realm);
+                    }
+                }
                 Err(error) => self.vm.apply_client_error(error),
             },
             Message::Disconnect => {
@@ -706,7 +713,8 @@ impl App {
                 text(&profile.url).size(12).color(MUTED),
                 text(format!(
                     "realm {}  ·  split tunnel: {}",
-                    profile.realm, profile.split_tunnel
+                    realm_display(&profile.realm),
+                    profile.split_tunnel
                 ))
                 .size(12)
                 .color(MUTED),
@@ -922,16 +930,23 @@ impl App {
             form = form.push(text(error.clone()).size(12).color(DANGER));
         }
 
-        form = form.push(text("Realm").size(12).color(MUTED)).push(
-            text_input("authentication realm", &self.vm.add_profile.realm)
-                .id(FocusField::AddProfileRealm.id())
-                .on_input(Message::AddProfileRealm)
-                .padding(8)
-                .width(Length::Fill),
-        );
+        form = form
+            .push(text("Realm (optional)").size(12).color(MUTED))
+            .push(
+                text_input("detect automatically", &self.vm.add_profile.realm)
+                    .id(FocusField::AddProfileRealm.id())
+                    .on_input(Message::AddProfileRealm)
+                    .padding(8)
+                    .width(Length::Fill),
+            );
         if let Some(error) = &self.vm.add_profile_errors.realm {
             form = form.push(text(error.clone()).size(12).color(DANGER));
         }
+        form = form.push(
+            text("The gateway advertises its realm; leave this empty to detect it automatically.")
+                .size(12)
+                .color(MUTED),
+        );
 
         form = form.push(text("Username").size(12).color(MUTED)).push(
             text_input("username", &self.vm.add_profile.username)
@@ -1165,7 +1180,7 @@ impl App {
         let enrolled = match self.vm.selected_profile() {
             Some(profile) => {
                 view = view.push(detail_row("Profile", &profile.name));
-                view = view.push(detail_row("Realm", &profile.realm));
+                view = view.push(detail_row("Realm", &realm_display(&profile.realm)));
                 view = view.push(detail_row("Gateway", &profile.url));
                 view = view.push(detail_row("Split tunnel", &split_tunnel_preview(profile)));
                 view = view.push(detail_row(
@@ -1400,6 +1415,14 @@ fn state_badge(state: &ConnectionState) -> Element<'static, Message> {
         .size(13)
         .color(state_color(state))
         .into()
+}
+
+fn realm_display(realm: &str) -> String {
+    if realm.trim().is_empty() {
+        "detect automatically".to_owned()
+    } else {
+        realm.to_owned()
+    }
 }
 
 fn banner(message: &str, color: Color) -> Element<'static, Message> {

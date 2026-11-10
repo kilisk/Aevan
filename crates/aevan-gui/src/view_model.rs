@@ -552,9 +552,6 @@ pub fn validate_profile_draft_excluding<'a>(
         }
     }
 
-    if draft.realm.trim().is_empty() {
-        errors.realm = Some("realm is required".to_owned());
-    }
     if draft.username.trim().is_empty() {
         errors.username = Some("username is required for non-interactive login".to_owned());
     }
@@ -1813,6 +1810,20 @@ impl ViewModel {
         self.clear_totp_entry();
     }
 
+    /// Record a realm detected during the first connect.
+    ///
+    /// The value is already persisted by the worker; this only refreshes the
+    /// in-memory row, any open edit draft and the one-time banner.
+    pub fn apply_detected_realm(&mut self, name: &str, realm: &str) {
+        if let Some(row) = self.profiles.iter_mut().find(|row| row.name == name) {
+            row.realm = realm.to_owned();
+        }
+        if self.editing_profile.as_deref() == Some(name) {
+            self.add_profile.realm = realm.to_owned();
+        }
+        self.notice = Some(format!("realm: {realm} (detected)"));
+    }
+
     /// Apply a successful `status` snapshot.
     pub fn apply_status(&mut self, report: StatusReport) {
         let previous = self.state.clone();
@@ -2930,8 +2941,47 @@ mod tests {
         assert!(!vm.validate_add_profile());
         assert!(vm.add_profile_errors.name.is_some());
         assert!(vm.add_profile_errors.url.is_some());
-        assert!(vm.add_profile_errors.realm.is_some());
+        assert!(
+            vm.add_profile_errors.realm.is_none(),
+            "an empty realm means detect, not an error"
+        );
         assert!(vm.add_profile_errors.username.is_some());
+    }
+
+    #[test]
+    fn an_empty_realm_is_saved_for_detection() {
+        let mut store = ProfileStore::default();
+        let mut vm = ViewModel::new(&store, "endpoint".into(), 0);
+        vm.begin_add_profile();
+        draft(&mut vm, "auto", "https://vpn.example.net/staff", "", "user");
+
+        assert!(vm.can_save_add_profile());
+        vm.save_added_profile(&mut store, 0).expect("save");
+        assert!(store.get("auto").expect("profile").realm.is_empty());
+    }
+
+    #[test]
+    fn a_detected_realm_updates_the_row_sheet_and_banner() {
+        let store = store();
+        let mut vm = ViewModel::new(&store, "endpoint".into(), 0);
+        vm.begin_edit_profile("example");
+        assert_eq!(vm.add_profile.realm, "example_realm");
+
+        vm.apply_detected_realm("example", "mygovnet_staff");
+
+        assert_eq!(
+            vm.profiles
+                .iter()
+                .find(|row| row.name == "example")
+                .expect("row")
+                .realm,
+            "mygovnet_staff"
+        );
+        assert_eq!(vm.add_profile.realm, "mygovnet_staff");
+        assert_eq!(
+            vm.notice.as_deref(),
+            Some("realm: mygovnet_staff (detected)")
+        );
     }
 
     #[test]
