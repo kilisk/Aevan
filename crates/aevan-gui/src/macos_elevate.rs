@@ -109,20 +109,6 @@ pub fn applescript_quote(value: &str) -> String {
     quoted
 }
 
-/// Build the one AppleScript statement that installs and bootstraps the helper.
-pub fn install_script(plist_contents: &str) -> String {
-    let install = format!(
-        "/bin/mkdir -p {directory} && /usr/bin/printf '%s' {contents} > {plist} && /usr/sbin/chown root:wheel {plist} && /bin/chmod 0644 {plist} && /bin/launchctl bootstrap system {plist}",
-        directory = shell_quote("/Library/LaunchDaemons"),
-        contents = shell_quote(plist_contents),
-        plist = shell_quote(INSTALLED_PLIST),
-    );
-    format!(
-        "do shell script {} with administrator privileges",
-        applescript_quote(&install)
-    )
-}
-
 /// Run one shell script through the native administrator prompt.
 ///
 /// This is the single elevation path shared with the daemon fallback and the
@@ -209,17 +195,6 @@ mod tests {
     fn an_applescript_literal_escapes_quotes_backslashes_and_newlines() {
         assert_eq!(applescript_quote("plain"), "\"plain\"");
         assert_eq!(applescript_quote("a\"b\\c\nd"), "\"a\\\"b\\\\c\\nd\"");
-    }
-
-    #[test]
-    fn the_install_script_names_one_admin_prompt_and_the_legacy_path() {
-        let script = install_script("<plist>a & b</plist>");
-        assert!(script.starts_with("do shell script \""));
-        assert!(script.ends_with(" with administrator privileges"));
-        assert!(script.contains("/bin/launchctl bootstrap system"));
-        assert!(script.contains(INSTALLED_PLIST));
-        assert!(script.contains("/usr/sbin/chown root:wheel"));
-        assert!(script.contains("a & b"));
     }
 
     #[test]
