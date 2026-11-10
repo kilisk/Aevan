@@ -450,6 +450,24 @@ pub struct ProfileRow {
     pub totp_enrolled: bool,
 }
 
+fn profile_rows(store: &ProfileStore) -> Vec<ProfileRow> {
+    let mut profiles: Vec<ProfileRow> = store
+        .profiles
+        .values()
+        .map(|profile| ProfileRow {
+            name: profile.name.clone(),
+            url: profile.url.clone(),
+            realm: profile.realm.clone(),
+            username: profile.username.clone(),
+            split_tunnel: split_tunnel_label(&profile.split_tunnel),
+            split_tunnel_routes: split_tunnel_routes(&profile.split_tunnel),
+            totp_enrolled: false,
+        })
+        .collect();
+    profiles.sort_by(|left, right| left.name.cmp(&right.name));
+    profiles
+}
+
 /// Plain data typed into the "Add profile" sheet.
 ///
 /// There is deliberately no password or token field: a profile never carries a
@@ -498,10 +516,14 @@ impl ProfileDraftErrors {
 /// Validate a draft against the profile names that already exist.
 ///
 /// The URL rule is "parses as http(s) and has a host". The profile store
-/// itself still enforces HTTPS when the profile is saved.
-pub fn validate_profile_draft<'a>(
+/// itself still enforces HTTPS when the profile is saved. `exclude` names the
+/// profile being edited, so saving under its own current name is accepted even
+/// though that name is already in the store; a name used by any other profile
+/// is still a per-field error.
+pub fn validate_profile_draft_excluding<'a>(
     draft: &ProfileDraft,
     existing: impl IntoIterator<Item = &'a str>,
+    exclude: Option<&str>,
 ) -> ProfileDraftErrors {
     let mut errors = ProfileDraftErrors::default();
 
@@ -510,7 +532,10 @@ pub fn validate_profile_draft<'a>(
         errors.name = Some("name is required".to_owned());
     } else if name.chars().any(char::is_whitespace) {
         errors.name = Some("name must not contain whitespace".to_owned());
-    } else if existing.into_iter().any(|existing| existing == name) {
+    } else if existing
+        .into_iter()
+        .any(|existing| existing == name && Some(existing) != exclude)
+    {
         errors.name = Some(format!("a profile named '{name}' already exists"));
     }
 
@@ -752,10 +777,14 @@ pub struct ViewModel {
     pub notice: Option<String>,
     /// Fields typed into the "Add profile" sheet.
     pub add_profile: ProfileDraft,
+    /// The profile being edited, or `None` when the sheet is adding a new one.
+    pub editing_profile: Option<String>,
     /// Per-field validation of [`Self::add_profile`].
     pub add_profile_errors: ProfileDraftErrors,
     /// A save-time failure (disk or store), shown inside the sheet.
     pub add_profile_error: Option<String>,
+    /// Profile name awaiting a delete confirmation, if any.
+    pub delete_confirmation: Option<String>,
     /// Base32 secret typed into the enrol form; zeroized and never displayed
     /// once saved.
     pub totp_input: Zeroizing<String>,
@@ -794,20 +823,7 @@ pub struct ViewModel {
 impl ViewModel {
     /// Build the initial state from the profile store.
     pub fn new(store: &ProfileStore, endpoint: String, now_unix: u64) -> Self {
-        let mut profiles: Vec<ProfileRow> = store
-            .profiles
-            .values()
-            .map(|profile| ProfileRow {
-                name: profile.name.clone(),
-                url: profile.url.clone(),
-                realm: profile.realm.clone(),
-                username: profile.username.clone(),
-                split_tunnel: split_tunnel_label(&profile.split_tunnel),
-                split_tunnel_routes: split_tunnel_routes(&profile.split_tunnel),
-                totp_enrolled: false,
-            })
-            .collect();
-        profiles.sort_by(|left, right| left.name.cmp(&right.name));
+        let profiles = profile_rows(store);
 
         let selected = store
             .default
@@ -835,8 +851,10 @@ impl ViewModel {
             endpoint,
             notice: None,
             add_profile: ProfileDraft::default(),
+            editing_profile: None,
             add_profile_errors: ProfileDraftErrors::default(),
             add_profile_error: None,
+            delete_confirmation: None,
             totp_input: Zeroizing::new(String::new()),
             totp_error: None,
             pending_totp: None,
@@ -991,15 +1009,59 @@ impl ViewModel {
     /// Open the "Add profile" sheet with an empty draft.
     pub fn begin_add_profile(&mut self) {
         self.add_profile = ProfileDraft::default();
+        self.editing_profile = None;
         self.add_profile_errors = ProfileDraftErrors::default();
         self.add_profile_error = None;
         self.notice = None;
         self.set_screen(Screen::AddProfile);
     }
 
-    /// Close the "Add profile" sheet without saving.
+    /// Open the existing add-profile sheet pre-filled from one stored profile.
+    pub fn begin_edit_profile(&mut self, name: &str) {
+        let Some(profile) = self.profiles.iter().find(|row| row.name == name).cloned() else {
+            self.notice = Some(format!("profile '{name}' was not found"));
+            return;
+        };
+        self.add_profile = ProfileDraft {
+            name: profile.name,
+            url: profile.url,
+            realm: profile.realm,
+            username: profile.username.unwrap_or_default(),
+        };
+        self.editing_profile = Some(name.to_owned());
+        self.add_profile_errors = ProfileDraftErrors::default();
+        self.add_profile_error = None;
+        self.notice = None;
+        self.set_screen(Screen::AddProfile);
+    }
+
+    /// The profile the sheet is editing, or `None` when adding a new one.
+    pub fn editing_profile(&self) -> Option<&str> {
+        self.editing_profile.as_deref()
+    }
+
+    /// Whether the sheet is editing the profile whose tunnel is live.
+    ///
+    /// Editing is still allowed; the sheet explains that changes apply to the
+    /// next connection and the live tunnel is not touched.
+    pub fn editing_connected_profile(&self) -> bool {
+        let Some(editing) = self.editing_profile.as_deref() else {
+            return false;
+        };
+        self.state == ConnectionState::Connected && self.active_profile() == Some(editing)
+    }
+
+    fn active_profile(&self) -> Option<&str> {
+        self.status
+            .as_ref()
+            .and_then(|status| status.profile.as_deref())
+            .or(self.selected.as_deref())
+    }
+
+    /// Close the profile sheet without saving.
     pub fn cancel_add_profile(&mut self) {
         self.add_profile = ProfileDraft::default();
+        self.editing_profile = None;
         self.add_profile_errors = ProfileDraftErrors::default();
         self.add_profile_error = None;
         if self.screen == Screen::AddProfile {
@@ -1039,7 +1101,12 @@ impl ViewModel {
 
     /// Whether Save may be pressed for the current draft.
     pub fn can_save_add_profile(&self) -> bool {
-        validate_profile_draft(&self.add_profile, self.existing_profile_names()).is_valid()
+        validate_profile_draft_excluding(
+            &self.add_profile,
+            self.existing_profile_names(),
+            self.editing_profile.as_deref(),
+        )
+        .is_valid()
     }
 
     /// Build the profile described by a valid draft.
@@ -1071,10 +1138,22 @@ impl ViewModel {
         Ok(profile)
     }
 
-    /// Add the draft to `store` and move back to the refreshed profile list.
+    /// Add or edit the draft in `store` and return to the refreshed list.
     ///
     /// The caller persists `store` afterwards; this keeps the view model free
     /// of path and file handling while still writing through [`ProfileStore`].
+    pub fn save_profile_draft(
+        &mut self,
+        store: &mut ProfileStore,
+        now_unix: u64,
+    ) -> Result<String, String> {
+        match self.editing_profile.clone() {
+            Some(original) => self.save_edited_profile(store, &original, now_unix),
+            None => self.save_added_profile(store, now_unix),
+        }
+    }
+
+    /// Add the draft to `store` and move back to the refreshed profile list.
     pub fn save_added_profile(
         &mut self,
         store: &mut ProfileStore,
@@ -1101,6 +1180,59 @@ impl ViewModel {
         Ok(name)
     }
 
+    fn save_edited_profile(
+        &mut self,
+        store: &mut ProfileStore,
+        original: &str,
+        now_unix: u64,
+    ) -> Result<String, String> {
+        let Some(existing) = store.get(original).cloned() else {
+            let message = format!("profile '{original}' was not found");
+            self.add_profile_error = Some(message.clone());
+            return Err(message);
+        };
+
+        let mut profile = match self.build_profile_from_draft() {
+            Ok(profile) => profile,
+            Err(message) => {
+                self.add_profile_error = Some(message.clone());
+                return Err(message);
+            }
+        };
+        // The sheet does not edit split-tunnel intent, so keep the stored one.
+        profile.split_tunnel = existing.split_tunnel.clone();
+        let name = profile.name.clone();
+
+        if name != original {
+            if store.get(&name).is_some() {
+                let message = format!("a profile named '{name}' already exists");
+                self.add_profile_errors.name = Some(message.clone());
+                self.add_profile_error = Some(message.clone());
+                return Err(message);
+            }
+            store.remove(original);
+        }
+        if let Err(error) = store.upsert(profile) {
+            // Restore the in-memory store if a rename had already removed the
+            // old key; the caller only writes to disk after success.
+            if name != original {
+                let _ = store.upsert(existing);
+            }
+            let message = error.to_string();
+            if message.contains("already exists") {
+                self.add_profile_errors.name = Some(message.clone());
+            }
+            self.add_profile_error = Some(message.clone());
+            return Err(message);
+        }
+        if name != original && store.default.as_deref() == Some(original) {
+            let _ = store.set_default(&name);
+        }
+
+        self.apply_profile_edited(store, &name, now_unix);
+        Ok(name)
+    }
+
     /// Refresh rows from `store`, select the newly added profile and return to
     /// the list screen.
     pub fn apply_profile_added(&mut self, store: &ProfileStore, name: &str, now_unix: u64) {
@@ -1113,10 +1245,132 @@ impl ViewModel {
                 .unwrap_or_default();
         }
         self.add_profile = ProfileDraft::default();
+        self.editing_profile = None;
         self.add_profile_errors = ProfileDraftErrors::default();
         self.add_profile_error = None;
         self.notice = Some(format!("Profile '{name}' added."));
         self.set_screen(Screen::Profiles);
+    }
+
+    /// Refresh rows from `store`, keep the edited profile selected and return
+    /// to the list screen.
+    pub fn apply_profile_edited(&mut self, store: &ProfileStore, name: &str, now_unix: u64) {
+        self.reload_profiles(store, now_unix);
+        if self.profiles.iter().any(|row| row.name == name) {
+            self.selected = Some(name.to_owned());
+            self.username = store
+                .get(name)
+                .and_then(|profile| profile.username.clone())
+                .unwrap_or_default();
+        }
+        self.add_profile = ProfileDraft::default();
+        self.editing_profile = None;
+        self.add_profile_errors = ProfileDraftErrors::default();
+        self.add_profile_error = None;
+        self.notice = Some(format!("Profile '{name}' updated."));
+        self.set_screen(Screen::Profiles);
+    }
+
+    /// The exact confirmation text for a pending delete.
+    pub fn delete_confirmation_label(&self) -> Option<String> {
+        self.delete_confirmation
+            .as_ref()
+            .map(|name| format!("Delete “{name}”? This cannot be undone."))
+    }
+
+    /// Ask for confirmation before deleting a profile.
+    ///
+    /// Returns `false` without changing anything when the profile is missing or
+    /// its tunnel is connected.
+    pub fn request_delete_profile(&mut self, name: &str) -> bool {
+        if !self.profiles.iter().any(|row| row.name == name) {
+            self.notice = Some(format!("profile '{name}' was not found"));
+            return false;
+        }
+        if let Some(refusal) = self.delete_connected_refusal(name) {
+            self.notice = Some(refusal);
+            return false;
+        }
+        self.delete_confirmation = Some(name.to_owned());
+        self.notice = None;
+        true
+    }
+
+    /// Dismiss a pending delete without touching the store.
+    pub fn cancel_delete_profile(&mut self) {
+        self.delete_confirmation = None;
+    }
+
+    /// Remove the confirmed profile from `store` and refresh the list.
+    ///
+    /// A connected profile is refused with the disconnect-first message and is
+    /// never removed.
+    pub fn confirm_delete_profile(
+        &mut self,
+        store: &mut ProfileStore,
+        now_unix: u64,
+    ) -> Result<String, String> {
+        let name = self
+            .delete_confirmation
+            .clone()
+            .ok_or_else(|| "no profile deletion is pending".to_owned())?;
+        if let Some(refusal) = self.delete_connected_refusal(&name) {
+            self.delete_confirmation = None;
+            self.notice = Some(refusal.clone());
+            return Err(refusal);
+        }
+        if store.remove(&name).is_none() {
+            let message = format!("profile '{name}' was not found");
+            self.delete_confirmation = None;
+            self.notice = Some(message.clone());
+            return Err(message);
+        }
+        let was_selected = self.selected.as_deref() == Some(name.as_str());
+        self.delete_confirmation = None;
+        self.apply_profile_deleted(store, &name, was_selected, now_unix);
+        Ok(name)
+    }
+
+    fn delete_connected_refusal(&self, name: &str) -> Option<String> {
+        (self.state == ConnectionState::Connected && self.active_profile() == Some(name))
+            .then(|| format!("'{name}' is connected. Disconnect first, then delete this profile."))
+    }
+
+    fn apply_profile_deleted(
+        &mut self,
+        store: &ProfileStore,
+        name: &str,
+        was_selected: bool,
+        now_unix: u64,
+    ) {
+        let previous_selected = if was_selected {
+            None
+        } else {
+            self.selected.clone()
+        };
+        self.profiles = profile_rows(store);
+        self.selected = previous_selected
+            .filter(|selected| self.profiles.iter().any(|row| &row.name == selected));
+        if was_selected {
+            self.username.clear();
+            self.totp_secret = None;
+            self.clear_totp_entry();
+        } else if let Some(selected) = self.selected.clone() {
+            self.username = store
+                .get(&selected)
+                .and_then(|profile| profile.username.clone())
+                .unwrap_or_default();
+        }
+        self.now_unix = now_unix;
+        self.notice = Some(format!("Profile '{name}' deleted."));
+        self.set_screen(Screen::Profiles);
+    }
+
+    /// Surface a profile-store write failure as the shared error banner.
+    pub fn apply_profile_store_error(&mut self, action: &str, error: impl fmt::Display) {
+        self.notice = Some(format!(
+            "could not save the profile store after {action}: {error}"
+        ));
     }
 
     fn existing_profile_names(&self) -> impl Iterator<Item = &str> {
@@ -1124,7 +1378,11 @@ impl ViewModel {
     }
 
     fn refresh_add_profile_errors(&mut self) {
-        let errors = validate_profile_draft(&self.add_profile, self.existing_profile_names());
+        let errors = validate_profile_draft_excluding(
+            &self.add_profile,
+            self.existing_profile_names(),
+            self.editing_profile.as_deref(),
+        );
         self.add_profile_errors = errors;
         self.add_profile_error = None;
     }
@@ -2774,6 +3032,145 @@ mod tests {
         assert_eq!(vm.screen, Screen::Profiles);
         assert_eq!(vm.profiles.len(), store.profiles.len());
         assert_eq!(vm.add_profile, ProfileDraft::default());
+    }
+
+    fn store_with_two() -> ProfileStore {
+        let mut store = store();
+        let mut second = Profile::new(
+            "second",
+            "https://second.example.net/second_realm",
+            "second_realm",
+        )
+        .expect("profile");
+        second.username = Some("second_user".into());
+        store.upsert(second).expect("upsert");
+        store
+    }
+
+    #[test]
+    fn editing_a_profile_prefills_exactly_the_stored_values() {
+        let store = store_with_two();
+        let mut vm = ViewModel::new(&store, "endpoint".into(), 0);
+        vm.begin_edit_profile("example");
+
+        assert_eq!(vm.screen, Screen::AddProfile);
+        assert_eq!(vm.editing_profile(), Some("example"));
+        assert_eq!(
+            vm.add_profile,
+            ProfileDraft {
+                name: "example".into(),
+                url: "https://vpn.example.net/example_realm".into(),
+                realm: "example_realm".into(),
+                username: "example_user".into(),
+            }
+        );
+        assert!(vm.can_save_add_profile());
+    }
+
+    #[test]
+    fn renaming_to_another_profiles_name_is_a_per_field_error() {
+        let store = store_with_two();
+        let mut vm = ViewModel::new(&store, "endpoint".into(), 0);
+        vm.begin_edit_profile("example");
+        vm.set_add_profile_name("second".into());
+
+        assert!(!vm.can_save_add_profile());
+        let message = vm.add_profile_errors.name.as_deref().expect("name error");
+        assert!(message.contains("already exists"), "{message}");
+    }
+
+    #[test]
+    fn renaming_to_the_same_name_is_accepted_and_replaces_in_place() {
+        let mut store = store_with_two();
+        let mut vm = ViewModel::new(&store, "endpoint".into(), 0);
+        vm.begin_edit_profile("example");
+        vm.set_add_profile_name("example".into());
+        vm.set_add_profile_url("https://other.example.net/example_realm".into());
+
+        assert!(vm.can_save_add_profile());
+        let name = vm.save_profile_draft(&mut store, 0).expect("save");
+
+        assert_eq!(name, "example");
+        assert_eq!(store.profiles.len(), 2);
+        assert_eq!(
+            store.get("example").expect("profile").url,
+            "https://other.example.net/example_realm"
+        );
+        assert_eq!(vm.selected.as_deref(), Some("example"));
+        assert_eq!(vm.editing_profile(), None);
+        assert_eq!(vm.screen, Screen::Profiles);
+    }
+
+    #[test]
+    fn deleting_a_profile_requires_confirmation_and_cancel_leaves_the_store() {
+        let store = store_with_two();
+        let mut vm = ViewModel::new(&store, "endpoint".into(), 0);
+
+        assert!(vm.request_delete_profile("second"));
+        assert_eq!(vm.delete_confirmation.as_deref(), Some("second"));
+        assert_eq!(
+            vm.delete_confirmation_label().as_deref(),
+            Some("Delete “second”? This cannot be undone.")
+        );
+        assert!(store.get("second").is_some());
+
+        vm.cancel_delete_profile();
+        assert!(vm.delete_confirmation.is_none());
+        assert!(store.get("second").is_some());
+    }
+
+    #[test]
+    fn confirming_a_delete_removes_the_profile_and_clears_a_selected_one() {
+        let mut store = ProfileStore::default();
+        let mut vm = ViewModel::new(&store, "endpoint".into(), 0);
+        vm.begin_add_profile();
+        draft(
+            &mut vm,
+            "only",
+            "https://only.example.net/realm",
+            "realm",
+            "only_user",
+        );
+        vm.save_added_profile(&mut store, 0).expect("save");
+        assert_eq!(vm.selected.as_deref(), Some("only"));
+
+        assert!(vm.request_delete_profile("only"));
+        let name = vm.confirm_delete_profile(&mut store, 0).expect("delete");
+
+        assert_eq!(name, "only");
+        assert!(store.get("only").is_none());
+        assert!(vm.profiles.is_empty());
+        assert_eq!(vm.selected, None);
+        assert!(vm.username.is_empty());
+        assert!(vm.delete_confirmation.is_none());
+        assert!(vm
+            .notice
+            .as_deref()
+            .is_some_and(|notice| notice.contains("deleted")));
+    }
+
+    #[test]
+    fn deleting_the_connected_profile_is_refused_with_the_disconnect_message() {
+        let store = store();
+        let mut vm = ViewModel::new(&store, "endpoint".into(), 0);
+        vm.apply_status(connected_report());
+
+        assert!(!vm.request_delete_profile("example"));
+        assert!(vm.delete_confirmation.is_none());
+        assert!(store.get("example").is_some());
+        let notice = vm.notice.as_deref().expect("notice");
+        assert!(notice.contains("connected"), "{notice}");
+        assert!(notice.contains("Disconnect first"), "{notice}");
+    }
+
+    #[test]
+    fn a_profile_store_write_failure_becomes_an_error_banner() {
+        let mut vm = model();
+        vm.apply_profile_store_error("delete", "read-only file system");
+
+        let notice = vm.notice.as_deref().expect("banner");
+        assert!(notice.contains("could not save"), "{notice}");
+        assert!(notice.contains("read-only"), "{notice}");
     }
 
     #[test]
