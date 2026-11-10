@@ -126,6 +126,12 @@ pub enum Message {
     UnregisterDaemonFinished(Result<(), String>),
     #[cfg(target_os = "macos")]
     OpenLoginItemsSettings,
+    #[cfg(target_os = "macos")]
+    InstallCliTools,
+    #[cfg(target_os = "macos")]
+    RemoveCliTools,
+    #[cfg(target_os = "macos")]
+    CliToolsChanged(Result<crate::cli_tools::CliToolsState, String>),
 }
 
 /// The iced application state.
@@ -137,6 +143,8 @@ pub struct App {
     tray_state: Option<TrayMenuState>,
     #[cfg(target_os = "macos")]
     daemon_service: Option<crate::relaunch::ServiceState>,
+    #[cfg(target_os = "macos")]
+    cli_tools: Option<crate::cli_tools::CliToolsState>,
 }
 
 /// Run the native window.
@@ -203,7 +211,13 @@ impl App {
             tray_state: None,
             #[cfg(target_os = "macos")]
             daemon_service: None,
+            #[cfg(target_os = "macos")]
+            cli_tools: None,
         };
+        #[cfg(target_os = "macos")]
+        {
+            app.cli_tools = crate::cli_tools::current_state();
+        }
         app.sync_tray();
         (app, Task::batch(tasks))
     }
@@ -594,6 +608,23 @@ impl App {
             }
             #[cfg(target_os = "macos")]
             Message::OpenLoginItemsSettings => daemon_bridge::open_login_items(),
+            #[cfg(target_os = "macos")]
+            Message::InstallCliTools => return cli_tools_install_task(),
+            #[cfg(target_os = "macos")]
+            Message::RemoveCliTools => return cli_tools_remove_task(),
+            #[cfg(target_os = "macos")]
+            Message::CliToolsChanged(result) => match result {
+                Ok(state) => {
+                    let stale = state.is_stale();
+                    self.cli_tools = Some(state);
+                    self.vm.notice = Some(if stale {
+                        "Command-line tools still point at an old bundle.".to_owned()
+                    } else {
+                        "Command-line tools updated.".to_owned()
+                    });
+                }
+                Err(error) => self.vm.notice = Some(error),
+            },
         }
         Task::none()
     }
@@ -698,6 +729,20 @@ impl App {
         let mut body = column![header].spacing(16).width(Length::Fill);
         if let Some(banner) = banner {
             body = body.push(banner);
+        }
+        #[cfg(target_os = "macos")]
+        if let Some(fix) = self.cli_tools.as_ref().and_then(|state| state.fix_it()) {
+            body = body.push(
+                row![
+                    text(fix.to_owned()).size(13).color(WARNING),
+                    button(text("Fix command-line tools").size(13))
+                        .on_press(Message::InstallCliTools)
+                        .style(button::secondary)
+                        .padding([4, 10]),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+            );
         }
         if let Some(quit_confirmation) = quit_confirmation {
             body = body.push(quit_confirmation);
@@ -1303,6 +1348,32 @@ impl App {
                 );
             }
         }
+        #[cfg(target_os = "macos")]
+        if let Some(cli_state) = &self.cli_tools {
+            view = view
+                .push(text("Command-line tools").size(17))
+                .push(detail_row("Command-line tools", &cli_state.label()));
+            if cli_state.is_stale() {
+                view = view.push(
+                    text("The links point at an old Aevan bundle. Install again to fix them.")
+                        .size(12)
+                        .color(WARNING),
+                );
+            }
+            view = view.push(
+                row![
+                    button(text("Install command-line tools").size(14))
+                        .on_press(Message::InstallCliTools)
+                        .style(button::secondary)
+                        .padding([6, 14]),
+                    button(text("Remove command-line tools").size(14))
+                        .on_press(Message::RemoveCliTools)
+                        .style(button::secondary)
+                        .padding([6, 14]),
+                ]
+                .spacing(8),
+            );
+        }
         if matches!(self.vm.state, ConnectionState::DaemonUnavailable { .. }) {
             let daemon_help = if cfg!(target_os = "macos") {
                 "Starting the daemon registers the bundled LaunchDaemon with ServiceManagement. macOS may ask you to approve it in System Settings > Login Items & Extensions; it is never started while connecting."
@@ -1747,6 +1818,34 @@ fn autostart_change_task(enabled: bool) -> Task<Message> {
 }
 
 #[cfg(target_os = "macos")]
+fn cli_tools_install_task() -> Task<Message> {
+    Task::perform(
+        async {
+            tokio::task::spawn_blocking(crate::cli_tools::install_current)
+                .await
+                .unwrap_or_else(|error| {
+                    Err(format!("the command-line tool worker stopped: {error}"))
+                })
+        },
+        Message::CliToolsChanged,
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn cli_tools_remove_task() -> Task<Message> {
+    Task::perform(
+        async {
+            tokio::task::spawn_blocking(crate::cli_tools::remove_current)
+                .await
+                .unwrap_or_else(|error| {
+                    Err(format!("the command-line tool worker stopped: {error}"))
+                })
+        },
+        Message::CliToolsChanged,
+    )
+}
+
+#[cfg(target_os = "macos")]
 fn daemon_service_status_task() -> Task<Message> {
     Task::perform(
         async {
@@ -1839,6 +1938,8 @@ mod tests {
             tray_state: None,
             #[cfg(target_os = "macos")]
             daemon_service: None,
+            #[cfg(target_os = "macos")]
+            cli_tools: None,
         }
     }
 

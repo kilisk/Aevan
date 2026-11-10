@@ -123,16 +123,20 @@ pub fn install_script(plist_contents: &str) -> String {
     )
 }
 
-/// Ask macOS for one administrator prompt and install the legacy LaunchDaemon.
+/// Run one shell script through the native administrator prompt.
 ///
-/// `osascript` is a child process: a crash or a cancelled prompt is an error
-/// result, never a crash of the GUI.
+/// This is the single elevation path shared with the daemon fallback and the
+/// command-line tool links. `osascript` is a child process: a crash or a
+/// cancelled prompt is an error result, never a crash of the GUI.
 #[cfg(target_os = "macos")]
-pub fn install(daemon: &Path) -> Result<(), String> {
-    let script = install_script(&legacy_plist(daemon));
+pub fn run_with_administrator(script: &str, failure: &str) -> Result<(), String> {
+    let applescript = format!(
+        "do shell script {} with administrator privileges",
+        applescript_quote(script)
+    );
     let output = std::process::Command::new("/usr/bin/osascript")
         .arg("-e")
-        .arg(script)
+        .arg(applescript)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -154,13 +158,31 @@ pub fn install(daemon: &Path) -> Result<(), String> {
         return Err(CANCELLED_MESSAGE.to_owned());
     }
     Err(if detail.is_empty() {
-        format!(
-            "the administrator approval did not install the Aevan helper (osascript exited with {})",
-            output.status
-        )
+        format!("{failure} (osascript exited with {})", output.status)
     } else {
-        format!("the administrator approval did not install the Aevan helper: {detail}")
+        format!("{failure}: {detail}")
     })
+}
+
+/// Ask macOS for one administrator prompt and install the legacy LaunchDaemon.
+#[cfg(target_os = "macos")]
+pub fn install(daemon: &Path) -> Result<(), String> {
+    run_with_administrator(
+        &legacy_install_command(daemon),
+        "the administrator approval did not install the Aevan helper",
+    )
+}
+
+/// The inner shell command that writes and bootstraps the legacy plist.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn legacy_install_command(daemon: &Path) -> String {
+    let plist_contents = legacy_plist(daemon);
+    format!(
+        "/bin/mkdir -p {directory} && /usr/bin/printf '%s' {contents} > {plist} && /usr/sbin/chown root:wheel {plist} && /bin/chmod 0644 {plist} && /bin/launchctl bootstrap system {plist}",
+        directory = shell_quote("/Library/LaunchDaemons"),
+        contents = shell_quote(&plist_contents),
+        plist = shell_quote(INSTALLED_PLIST),
+    )
 }
 
 fn is_cancelled(detail: &str) -> bool {
