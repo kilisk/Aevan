@@ -283,6 +283,22 @@ fn start_daemon_beside(executable: &Path) -> Result<(), String> {
         }
 
         fn register(&self) -> Result<RegisterMethod, String> {
+            // An ad-hoc signed bundle cannot use SMAppService at all: it
+            // validates the helper's signature before anything else, so trying
+            // it only produces "job plist not found"/"operation not permitted"
+            // and a message that blames the bundle.
+            let bundle = std::env::current_exe()
+                .ok()
+                .and_then(|executable| crate::macos_bundle::bundle_root_from(&executable));
+            if let Some(bundle) = bundle.as_deref() {
+                if macos_elevate::bundle_is_adhoc(bundle) {
+                    tracing::info!("ad-hoc signed bundle: installing the helper as a LaunchDaemon");
+                    if !macos_elevate::daemon_installed() {
+                        macos_elevate::install(self.executable)?;
+                    }
+                    return Ok(RegisterMethod::LegacyLaunchDaemon);
+                }
+            }
             match macos_service::register() {
                 Ok(()) => Ok(RegisterMethod::ServiceManagement),
                 Err(error) if macos_elevate::should_fall_back(&error) => {

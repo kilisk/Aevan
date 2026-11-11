@@ -35,6 +35,27 @@ pub fn should_fall_back(error: &str) -> bool {
     error != crate::relaunch::APPROVAL_REQUIRED_MESSAGE
 }
 
+/// Whether the app bundle carries only an ad-hoc signature.
+///
+/// `SMAppService` validates the helper's code signature, so an ad-hoc signed
+/// build can never register a daemon: it fails with "job plist not found" or
+/// "operation not permitted" no matter what is in the bundle. Asking first
+/// avoids a guaranteed failure and the misleading message that came with it.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn bundle_is_adhoc(bundle: &Path) -> bool {
+    let output = std::process::Command::new("/usr/bin/codesign")
+        .args(["-dv", "--verbose=2"])
+        .arg(bundle)
+        .output();
+    match output {
+        Ok(output) => {
+            let text = String::from_utf8_lossy(&output.stderr).to_ascii_lowercase();
+            text.contains("signature=adhoc")
+        }
+        Err(_) => false,
+    }
+}
+
 /// Whether the legacy helper plist is already installed.
 ///
 /// Once it exists, the daemon is a normal LaunchDaemon with `RunAtLoad`; later
