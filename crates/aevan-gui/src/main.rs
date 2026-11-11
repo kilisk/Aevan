@@ -20,6 +20,10 @@ mod daemon_bridge;
 mod instance;
 #[cfg(any(target_os = "macos", test))]
 mod macos_elevate;
+// Bundle resolution and verification are pure and unit tested everywhere; only
+// macOS calls them in the application.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod macos_bundle;
 #[cfg(target_os = "macos")]
 mod macos_service;
 mod notifications;
