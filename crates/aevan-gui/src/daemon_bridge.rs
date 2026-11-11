@@ -234,10 +234,40 @@ pub fn start_daemon() -> Result<(), String> {
 fn start_daemon_beside(executable: &Path) -> Result<(), String> {
     use aevan_daemon::launchd;
 
+    use crate::macos_bundle;
     use crate::macos_elevate;
     use crate::macos_service;
     use crate::relaunch::{self, RegisterMethod, RelaunchOps, StartMethod};
     use crate::start_log;
+
+    // Resolve the bundle the way macOS does and check every expected artifact
+    // before any registration. A translocated or incomplete bundle must never
+    // reach ServiceManagement, and the failure carries the exact paths checked.
+    let bundle = match macos_bundle::verify_resolved() {
+        Ok(bundle) => bundle,
+        Err(problem) => {
+            let message = problem.to_string();
+            let _ = start_log::record_default(
+                &format!(
+                    "macOS daemon registration bundle check ({})",
+                    macos_bundle::PLIST_RELATIVE_PATH
+                ),
+                None,
+                &message,
+            );
+            tracing::warn!(
+                reason = %message,
+                bundle = problem.bundle_root().map(|root| root.display().to_string()),
+                "the app bundle cannot register the daemon"
+            );
+            return Err(message);
+        }
+    };
+    tracing::debug!(
+        bundle = %bundle.root.display(),
+        plist = %bundle.plist.display(),
+        "verified the bundled daemon plist"
+    );
 
     struct MacOps<'a> {
         executable: &'a Path,

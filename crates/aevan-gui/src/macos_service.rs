@@ -10,7 +10,7 @@
 use crate::relaunch::ServiceState;
 
 /// File name of the bundled LaunchDaemon plist.
-pub const PLIST_NAME: &str = "com.github.kilisk.aevand.plist";
+pub use crate::macos_bundle::PLIST_NAME;
 
 /// Read the current `SMAppService` status.
 pub fn status() -> Result<ServiceState, String> {
@@ -46,7 +46,7 @@ mod imp {
         kSMErrorLaunchDeniedByUser, SMAppService, SMAppServiceStatus,
     };
 
-    use crate::relaunch::{ServiceState, APPROVAL_REQUIRED_MESSAGE, NOT_FOUND_MESSAGE};
+    use crate::relaunch::{ServiceState, APPROVAL_REQUIRED_MESSAGE};
 
     use super::PLIST_NAME;
 
@@ -91,7 +91,7 @@ mod imp {
                     Err(APPROVAL_REQUIRED_MESSAGE.to_owned())
                 }
                 code if code == kSMErrorJobPlistNotFound as isize => {
-                    Err(NOT_FOUND_MESSAGE.to_owned())
+                    Err(crate::macos_bundle::service_management_not_found_message())
                 }
                 _ => Err(describe(&error)),
             },
