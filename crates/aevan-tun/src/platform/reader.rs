@@ -17,11 +17,12 @@
 //! logged; a wedged reader never prevents route or DNS rollback.
 #![allow(unsafe_code)]
 
+use std::collections::VecDeque;
 use std::io;
 use std::os::unix::io::RawFd;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -84,14 +85,11 @@ impl DeviceReader {
             wake_read,
             wake_write,
         });
-        let wake: Box<dyn Fn() + Send + Sync> = Box::new(move || wake_pipe(wake_write));
-        match Self::spawn_inner(
-            source,
-            interface,
-            Some(handle),
-            wake,
-            Some((wake_read, wake_write)),
-        ) {
+        let wake: Box<dyn Fn() + Send + Sync> = {
+            let wake_write = wake_write;
+            Box::new(move || wake_pipe(wake_write))
+        };
+        match Self::spawn_inner(source, interface, Some(handle), wake, Some((wake_read, wake_write))) {
             Ok(reader) => Ok(Some(reader)),
             Err(error) => {
                 close_fd(wake_read);
@@ -215,9 +213,6 @@ fn reader_loop(
     loop {
         match source.read_packet(&mut buffer) {
             Ok(0) => {
-                // End of file or cancellation. The flag is what tells the ESP
-                // loop that an empty queue will never fill again.
-                dead.store(true, Ordering::Release);
                 tracing::debug!(interface = %interface, "tunnel device reader reached end of input");
                 return;
             }
@@ -416,8 +411,7 @@ fn join_with_timeout(handle: JoinHandle<()>, timeout: Duration) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::VecDeque;
-    use std::sync::{Condvar, Mutex};
+    use std::net::Ipv4Addr;
 
     fn ipv4_packet(marker: u8) -> Vec<u8> {
         vec![
@@ -426,17 +420,10 @@ mod tests {
         ]
     }
 
-    /// Frame a packet the way this platform's descriptor does.
-    #[cfg(target_os = "macos")]
-    fn framed(packet: &[u8]) -> Vec<u8> {
+    fn utun_frame(packet: &[u8]) -> Vec<u8> {
         let mut frame = 2u32.to_be_bytes().to_vec();
         frame.extend_from_slice(packet);
         frame
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    fn framed(packet: &[u8]) -> Vec<u8> {
-        packet.to_vec()
     }
 
     #[derive(Clone, Default)]
@@ -498,11 +485,14 @@ mod tests {
     fn a_blocking_source_delivers_both_queued_packets_then_the_queue_is_empty() {
         let first = ipv4_packet(1);
         let second = ipv4_packet(2);
-        let source = BlockingSource::with_packets(vec![framed(&first), framed(&second)]);
+        let source = BlockingSource::with_packets(vec![utun_frame(&first), utun_frame(&second)]);
         let reads = Arc::clone(&source.reads);
-        let mut reader =
-            DeviceReader::spawn_source(Box::new(source), "utun-test".to_owned(), Some(11))
-                .expect("reader");
+        let mut reader = DeviceReader::spawn_source(
+            Box::new(source),
+            "utun-test".to_owned(),
+            Some(11),
+        )
+        .expect("reader");
 
         let packets = wait_for_packets(&reader, 2);
         assert_eq!(packets.len(), 2, "both queued packets must arrive");
@@ -527,21 +517,22 @@ mod tests {
     #[test]
     fn shutdown_is_idempotent() {
         let source = BlockingSource::with_packets(Vec::new());
-        let mut reader = DeviceReader::spawn_source(Box::new(source), "utun-test".to_owned(), None)
-            .expect("reader");
+        let mut reader =
+            DeviceReader::spawn_source(Box::new(source), "utun-test".to_owned(), None)
+                .expect("reader");
         assert!(reader.shutdown());
         assert!(reader.shutdown(), "a second shutdown is still joined");
     }
 
-    #[cfg(target_os = "macos")]
     #[test]
     fn malformed_frames_are_dropped_without_stopping_the_reader() {
         let good = ipv4_packet(7);
-        let mut malformed = vec![0u8, 0, 2];
-        malformed.extend_from_slice(&[0x45]);
-        let source = BlockingSource::with_packets(vec![malformed, framed(&good)]);
-        let mut reader = DeviceReader::spawn_source(Box::new(source), "utun-test".to_owned(), None)
-            .expect("reader");
+        let mut short = vec![0u8, 0, 2];
+        short.extend_from_slice(&[0x45]);
+        let source = BlockingSource::with_packets(vec![short, utun_frame(&good)]);
+        let mut reader =
+            DeviceReader::spawn_source(Box::new(source), "utun-test".to_owned(), None)
+                .expect("reader");
 
         let packets = wait_for_packets(&reader, 1);
         assert_eq!(packets, vec![good]);
@@ -569,5 +560,11 @@ mod tests {
         }
         assert!(reader.is_dead(), "a read error must mark the reader dead");
         assert!(reader.shutdown());
+    }
+
+    #[test]
+    fn the_test_packets_are_valid_ipv4() {
+        assert_eq!(ipv4_packet(0x2a)[0] >> 4, 4);
+        assert_eq!(Ipv4Addr::new(10, 0, 0, 2).octets()[0], 10);
     }
 }

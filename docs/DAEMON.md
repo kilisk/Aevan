@@ -205,13 +205,10 @@ Disconnected ──connect──> Authenticating ──auth ok──> Connecting
 
 The blocking connector worker runs the ESP loop described in
 [`docs/CONNECT.md`](CONNECT.md#data-plane): a non-blocking UDP socket,
-batched drains in both directions, reusable packet buffers, and a bounded event
-wait when the tunnel is idle. On Windows that wait covers the socket and the
-Wintun read event with a 50 ms bound. On macOS and Linux a dedicated reader
-thread owns the blocking `utun`/`tun` descriptor, feeds a bounded 256-packet
-channel, and the loop polls only the UDP socket with a 10 ms bound; shutdown
-wakes and joins the reader with a 2-second bound before rolling back routes and
-DNS. A disconnect sets the stop flag and is noticed within the bounded wait.
+non-blocking Wintun reads, batched drains in both directions, reusable packet
+buffers, and a bounded 50 ms event wait over the socket and the Wintun read
+event when the tunnel is idle. A disconnect sets the stop flag and is noticed
+within that bounded wait.
 
 ## Single-attempt guard
 

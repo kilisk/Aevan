@@ -98,11 +98,6 @@ pub fn shutdown_requested() -> bool {
     imp::shutdown_requested()
 }
 
-#[cfg(unix)]
-pub mod reader;
-#[cfg(unix)]
-pub use reader::DeviceReader;
-
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod unix;
 

@@ -37,27 +37,6 @@ A unit test pins it: `resolve_interface(Some("utun5"), "utun0") == "utun5"`.
 This also makes crash recovery correct: the journal now records the interface that was really
 configured, so a rollback after a hard kill targets the right one.
 
-## The Unix read path now matches WireGuard's
-
-The descriptor is opened blocking and a dedicated reader thread owns the read side. It loops on a
-blocking `read(2)`, strips and validates the macOS address-family header, and feeds a bounded
-256-packet channel. The ESP loop drains that channel first every iteration, polls only the UDP
-socket, and uses a 10 ms bounded wait so a queued packet is never far behind. A full channel drops
-the packet with a warning instead of growing without bound.
-
-The old design shared one non-blocking descriptor between `poll(2)` and `read()`; on a real Mac it
-held the ESP socket, reported `device_packets: 0`, filled the interface queue and made `lsof` hang
-walking the descriptor. That design is gone on Unix.
-
-Shutdown writes to a self-pipe and joins the reader with a 2-second bound, then rolls back routes
-and DNS. A reader that somehow will not stop is detached and logged, so it cannot keep teardown from
-restoring the host. The watchdog now warns when the reader channel has been empty for 5 seconds and
-names the interface and descriptor. Windows and Wintun are unchanged.
-
-The fake-blocking-device tests prove that the loop drains two queued packets without waiting for the
-reader's blocking read, and that shutdown joins the reader. They run on Linux under WSL and on the
-macOS CI job.
-
 ## Also in this release
 
 - **Route takeover** (0.2.13): a pushed route that already exists on another interface is journalled and

@@ -205,29 +205,14 @@ tick:
   Wintun receive path makes one `WintunReceivePacket` call per packet. An empty
   socket returns `WouldBlock` immediately instead of waiting for a read
   timeout.
-* **Unix blocking reader.** On macOS and Linux the `utun`/`tun` descriptor is
-  opened blocking and one dedicated reader thread owns the read side, the same
-  pattern WireGuard uses. It loops on a blocking `read(2)`, strips and validates
-  the macOS 4-byte address-family header, and pushes packets into a bounded
-  channel of 256 packets. A full channel drops the packet and logs a warning;
-  `EINTR` retries, and EOF/`EBADF`/`EIO` mark the reader dead so the loop can
-  end the tunnel. The ESP loop never polls or reads that descriptor. This
-  replaces the readable-but-empty `poll(2)` design that left the interface
-  queue full on a real Mac.
 * **Batched.** Each poll drains every datagram already queued, then every
   device packet, capped at `ESP_BATCH_MAX` (64) per direction. Under load the
   loop does not block or sleep; a remainder stays queued for the next poll.
 * **Event-driven when idle.** When both directions are empty the loop waits on
   the operating system primitive: `WaitForMultipleObjects` over the Winsock UDP
-  event and the Wintun read event on Windows, and `poll(2)` over the UDP
-  socket on Unix. The Windows wait is bounded at 50 ms; the Unix channel path
-  uses 10 ms so a packet queued by the reader is consumed promptly without a
-  busy spin. Keepalives, rekey deadlines and the stop flag run within that
-  bound; shutdown never waits longer than one interval.
-* **Unix writes stay on the loop.** Decrypted packets are written by the ESP
-  loop, which prepends the macOS address-family header. A write that would
-  block is retried once after a short sleep and then dropped with a warning
-  instead of stalling the loop.
+  event and the Wintun read event on Windows, `poll(2)` over both descriptors on
+  Unix. The wait is bounded at 50 ms so keepalives, rekey deadlines and the stop
+  flag are still serviced promptly; shutdown never waits longer than that.
 * **Buffer reuse.** `EspSession` allocates its UDP, device, plaintext and
   encrypt buffers once at construction. `encrypt_into`/`decrypt_into` write into
   caller-owned buffers, so steady-state packets do not allocate a `Vec` in
@@ -239,11 +224,6 @@ tick:
   confirm-before-switch rekey, byte counters and error mapping are unchanged. A
   non-blocking send that reports `WouldBlock` drops that datagram, as UDP
   permits, instead of failing the tunnel.
-* **Diagnostics.** Opening a device logs the interface name read back from the
-  OS and the descriptor number at info. A watchdog warns when the Unix reader
-  channel has been empty for 5 seconds, naming the interface and descriptor.
-  The reader is woken through a self-pipe and joined with a 2-second bound
-  during teardown, so a wedged reader cannot delay route or DNS rollback.
 
 Measure the offline packet path (encrypt + decrypt, with the old per-packet
 `Vec` path and the buffer-reuse path measured in the same run):

@@ -49,36 +49,15 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
 /// request is observed within this interval even with no traffic.
 const ESP_IDLE_TIMEOUT: Duration = Duration::from_millis(50);
 
-/// How long the Unix channel-backed loop waits before checking its queue again.
-///
-/// The reader thread wakes this loop through the queue, not through a readiness
-/// descriptor, so the wait is the latency bound for a queued packet. Ten
-/// milliseconds keeps interactive traffic responsive without a busy spin. Only
-/// the Unix channel path uses it.
-const ESP_CHANNEL_IDLE_TIMEOUT: Duration = Duration::from_millis(10);
-
 /// Fallback ESP UDP port when KMP 301 group 8 attr 4 is absent.
 const DEFAULT_ESP_PORT: u16 = 4500;
 
 /// Consecutive readable-but-empty device drains before the watchdog trips.
-///
-/// This is the Windows readiness watchdog; the Unix channel path replaces it
-/// with [`DEVICE_CHANNEL_EMPTY_WARNING`].
 const DEVICE_POLL_LIE_LIMIT: u32 = 100;
 
 /// How long a connected device may go without producing a readable packet
 /// before the loop warns.
 const DEVICE_STALL_WARNING: Duration = Duration::from_secs(2);
-
-/// How long the Unix reader channel may stay empty before the loop warns.
-const DEVICE_CHANNEL_EMPTY_WARNING: Duration = Duration::from_secs(5);
-
-/// Minimum spacing between channel-empty warnings.
-const DEVICE_CHANNEL_WARNING_INTERVAL: Duration = Duration::from_secs(30);
-
-/// Delay before retrying a device write that reported `WouldBlock`.
-#[cfg(unix)]
-const DEVICE_WRITE_RETRY_DELAY: Duration = Duration::from_millis(2);
 
 /// Options for one connect attempt.
 #[derive(Debug, Clone, Copy, Default)]
@@ -339,51 +318,12 @@ pub fn connect_session<C: TunnelControl>(
     // new KMP 302/303 on the same channel that carried KMP 301.
     esp_session.set_kmp_channel(Box::new(handshake));
 
-    // On Unix the tunnel descriptor is blocking and has one owner for reads:
-    // a dedicated reader thread feeding a bounded channel. The ESP loop only
-    // writes to the device.
-    #[cfg(unix)]
-    let mut reader = {
-        let device = guard.device_ref()?;
-        aevan_tun::platform::DeviceReader::spawn_device(device).map_err(AevanError::Io)?
-    };
-
     let run = {
-        #[cfg(unix)]
-        {
-            match reader.as_mut() {
-                Some(reader) => {
-                    let mut adapter = ChannelEspDevice {
-                        inner: guard.device_mut()?,
-                        reader,
-                    };
-                    run_esp(&mut esp_session, &mut transport, &mut adapter, control)
-                }
-                None => {
-                    let mut adapter = TunEspDevice {
-                        inner: guard.device_mut()?,
-                    };
-                    run_esp(&mut esp_session, &mut transport, &mut adapter, control)
-                }
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            let mut adapter = TunEspDevice {
-                inner: guard.device_mut()?,
-            };
-            run_esp(&mut esp_session, &mut transport, &mut adapter, control)
-        }
+        let mut adapter = TunEspDevice {
+            inner: guard.device_mut()?,
+        };
+        run_esp(&mut esp_session, &mut transport, &mut adapter, control)
     };
-
-    // Wake and join the reader before rolling anything back. A reader that
-    // refuses to stop is detached after a bounded wait, so it can never keep
-    // the route/DNS rollback from running.
-    #[cfg(unix)]
-    if let Some(reader) = reader.as_mut() {
-        reader.shutdown();
-    }
-
     control.stats(esp_session.bytes_received(), esp_session.bytes_sent());
 
     let teardown = guard.teardown();
@@ -420,20 +360,9 @@ where
         udp: udp.wait_handle(),
         device: device.wait_handle(),
     };
-    // A channel-backed device owns its descriptor in a reader thread. The ESP
-    // loop must not poll that descriptor; it only drains the queue.
-    let channel_backed = device.device_fd().is_some() && device.wait_handle().is_none();
-    let interface = device.interface_name().map(str::to_owned);
-    let idle_timeout = if cfg!(unix) && channel_backed {
-        ESP_CHANNEL_IDLE_TIMEOUT
-    } else {
-        ESP_IDLE_TIMEOUT
-    };
     tracing::debug!(
-        device_fd = ?device.device_fd(),
+        device_fd = ?sources.device,
         udp_fd = ?sources.udp,
-        interface = %interface.as_deref().unwrap_or("tun"),
-        channel_backed,
         "ESP loop starting"
     );
 
@@ -442,7 +371,6 @@ where
     let mut device_polling = true;
     let mut zero_device_drains = 0u32;
     let mut last_device_packet = Instant::now();
-    let mut last_channel_warning: Option<Instant> = None;
     let mut last_stall_warning: Option<Instant> = None;
     let mut last_error: Option<String> = None;
 
@@ -460,29 +388,7 @@ where
             last_error = Some(format!("{kind:?}"));
         }
 
-        if report.device_packets > 0 {
-            last_device_packet = now;
-        }
-
-        if channel_backed {
-            // The queue being empty for a long time is the replacement for the
-            // old readable-but-empty readiness watchdog: the reader thread, not
-            // the ESP loop, decides when a packet exists.
-            if report.device_packets == 0
-                && now.duration_since(last_device_packet) >= DEVICE_CHANNEL_EMPTY_WARNING
-                && last_channel_warning
-                    .is_none_or(|at| now.duration_since(at) >= DEVICE_CHANNEL_WARNING_INTERVAL)
-            {
-                tracing::warn!(
-                    interface = %interface.as_deref().unwrap_or("tun"),
-                    fd = ?device.device_fd(),
-                    empty_for = ?now.duration_since(last_device_packet),
-                    last_error = ?last_error,
-                    "tunnel device channel has been empty while the tunnel is connected"
-                );
-                last_channel_warning = Some(now);
-            }
-        } else if device_polling {
+        if device_polling {
             if report.device_packets > 0 {
                 last_device_packet = now;
                 zero_device_drains = 0;
@@ -518,13 +424,11 @@ where
         }
 
         if !report.worked {
-            // Nothing was ready. Wait for the socket (and, when the backend has
-            // one, the device) with a bounded timeout so keepalives, rekey
-            // timers and the stop flag are still serviced. The channel-backed
-            // path uses the shorter timeout so a queued packet is never far
-            // behind.
+            // Nothing was ready. Wait for either the socket or the device, with
+            // a bounded timeout so keepalives, rekey timers and the stop flag
+            // are still serviced.
             if wait_sources.udp.is_some() || wait_sources.device.is_some() {
-                match platform::wait_readable(wait_sources, idle_timeout) {
+                match platform::wait_readable(wait_sources, ESP_IDLE_TIMEOUT) {
                     Ok(observed) => {
                         readiness = EspReadiness {
                             udp: observed.udp,
@@ -534,11 +438,11 @@ where
                     Err(error) => {
                         last_error = Some(error.to_string());
                         tracing::debug!(%error, "ESP readiness wait failed; using a bounded sleep");
-                        std::thread::sleep(idle_timeout);
+                        std::thread::sleep(ESP_IDLE_TIMEOUT);
                     }
                 }
             } else {
-                std::thread::sleep(idle_timeout);
+                std::thread::sleep(ESP_IDLE_TIMEOUT);
             }
         }
     }
@@ -717,10 +621,6 @@ struct TunEspDevice<'a> {
 }
 
 impl aevan_nc::EspDevice for TunEspDevice<'_> {
-    fn interface_name(&self) -> Option<&str> {
-        self.inner.name()
-    }
-
     fn recv(&mut self, buffer: &mut [u8]) -> io::Result<Option<usize>> {
         match self.inner.recv(buffer) {
             Ok(length) => Ok(Some(length)),
@@ -750,96 +650,6 @@ impl aevan_nc::EspDevice for TunEspDevice<'_> {
     fn wait_handle(&self) -> Option<isize> {
         self.inner.wait_handle()
     }
-}
-
-/// Adapts a reader-thread queue plus the device's write side to the ESP
-/// session.
-///
-/// The descriptor is read only by [`aevan_tun::platform::DeviceReader`]; this
-/// adapter is the non-blocking consumer. Writes stay synchronous on the loop
-/// thread and drop a packet rather than blocking the data plane when the
-/// device's queue is full.
-#[cfg(unix)]
-struct ChannelEspDevice<'a> {
-    inner: &'a mut Box<dyn Device>,
-    reader: &'a mut aevan_tun::platform::DeviceReader,
-}
-
-#[cfg(unix)]
-impl aevan_nc::EspDevice for ChannelEspDevice<'_> {
-    fn recv(&mut self, buffer: &mut [u8]) -> io::Result<Option<usize>> {
-        match self.reader.try_recv() {
-            Some(packet) => {
-                if packet.len() > buffer.len() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!(
-                            "tunnel packet of {} bytes exceeds the {}-byte device buffer",
-                            packet.len(),
-                            buffer.len()
-                        ),
-                    ));
-                }
-                buffer[..packet.len()].copy_from_slice(&packet);
-                Ok(Some(packet.len()))
-            }
-            None if self.reader.is_dead() => Err(io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                "the tunnel device reader stopped",
-            )),
-            None => Ok(None),
-        }
-    }
-
-    fn send(&mut self, packet: &[u8]) -> io::Result<()> {
-        for attempt in 0..2 {
-            match self.inner.send(packet) {
-                Ok(_) => return Ok(()),
-                Err(TunError::Io(error)) if error.kind() == io::ErrorKind::Interrupted => {
-                    if attempt == 0 {
-                        continue;
-                    }
-                    return Err(error);
-                }
-                Err(TunError::Io(error)) if would_block(&error) && attempt == 0 => {
-                    std::thread::sleep(DEVICE_WRITE_RETRY_DELAY);
-                }
-                Err(TunError::Io(error)) if would_block(&error) => {
-                    tracing::warn!(
-                        interface = %self.reader.interface(),
-                        fd = ?self.reader.fd(),
-                        %error,
-                        "tunnel device write would block; dropping the packet"
-                    );
-                    return Ok(());
-                }
-                Err(TunError::Io(error)) => return Err(error),
-                Err(error) => return Err(io::Error::other(error)),
-            }
-        }
-        Ok(())
-    }
-
-    fn wait_handle(&self) -> Option<isize> {
-        // The reader owns the descriptor; the ESP loop must not poll it.
-        None
-    }
-
-    fn device_fd(&self) -> Option<isize> {
-        self.reader.fd()
-    }
-
-    fn interface_name(&self) -> Option<&str> {
-        Some(self.reader.interface())
-    }
-}
-
-#[cfg(unix)]
-fn would_block(error: &io::Error) -> bool {
-    matches!(
-        error.kind(),
-        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-    )
 }
 
 /// Owns the rollback session, the device and the journal.
@@ -888,13 +698,6 @@ impl ConnectGuard {
             }
         }
         Ok(())
-    }
-
-    #[cfg(unix)]
-    fn device_ref(&self) -> AevanResult<&dyn Device> {
-        self.device
-            .as_deref()
-            .ok_or_else(|| AevanError::Config("connect has no open device".into()))
     }
 
     fn device_mut(&mut self) -> AevanResult<&mut Box<dyn Device>> {
@@ -1212,243 +1015,6 @@ mod tests {
                 new: None
             }
         );
-    }
-
-    #[cfg(unix)]
-    mod blocking_reader {
-        use super::*;
-        use std::collections::VecDeque;
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        use std::sync::{Arc, Condvar, Mutex};
-        use std::thread;
-        use std::time::Instant;
-
-        use aevan_nc::{
-            EspAuthentication, EspDevice, EspEncryption, EspKeys, EspSessionMaterial, EspUdp,
-            RekeyPolicy, SecretKey, ESP_IV_LEN,
-        };
-        use aevan_tun::platform::reader::PacketSource;
-        use aevan_tun::NoopBackend;
-
-        fn keys(encryption_byte: u8, hmac_byte: u8) -> EspKeys {
-            EspKeys::new(
-                EspEncryption::Aes128Cbc,
-                EspAuthentication::HmacSha1,
-                SecretKey::new(vec![encryption_byte; 16]),
-                SecretKey::new(vec![hmac_byte; 20]),
-            )
-            .expect("test keys")
-        }
-
-        fn material() -> EspSessionMaterial {
-            EspSessionMaterial {
-                outbound_spi: 0x1111_2222,
-                outbound_keys: keys(0x10, 0x20),
-                inbound_spi: 0x3333_4444,
-                inbound_keys: keys(0x30, 0x40),
-            }
-        }
-
-        fn ipv4_packet(marker: u8) -> Vec<u8> {
-            vec![
-                0x45, 0x00, 0x00, 0x14, 0x00, 0x01, 0x00, 0x00, 0x40, 0x06, 0x00, 0x00, 10, 0, 0,
-                marker, 10, 0, 0, 2,
-            ]
-        }
-
-        #[cfg(target_os = "macos")]
-        fn framed(packet: &[u8]) -> Vec<u8> {
-            let mut frame = 2u32.to_be_bytes().to_vec();
-            frame.extend_from_slice(packet);
-            frame
-        }
-
-        #[cfg(not(target_os = "macos"))]
-        fn framed(packet: &[u8]) -> Vec<u8> {
-            packet.to_vec()
-        }
-
-        /// A device source that yields its queued packets and then blocks until
-        /// shutdown wakes it.
-        struct BlockingDevice {
-            packets: Mutex<VecDeque<Vec<u8>>>,
-            stopped: Arc<(Mutex<bool>, Condvar)>,
-        }
-
-        impl BlockingDevice {
-            fn new(packets: Vec<Vec<u8>>) -> Self {
-                Self {
-                    packets: Mutex::new(packets.into()),
-                    stopped: Arc::new((Mutex::new(false), Condvar::new())),
-                }
-            }
-        }
-
-        impl PacketSource for BlockingDevice {
-            fn read_packet(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-                if let Some(packet) = self.packets.lock().expect("packets").pop_front() {
-                    assert!(packet.len() <= buffer.len());
-                    buffer[..packet.len()].copy_from_slice(&packet);
-                    return Ok(packet.len());
-                }
-                let (lock, condition) = &*self.stopped;
-                let mut stopped = lock.lock().expect("stopped");
-                while !*stopped {
-                    stopped = condition.wait(stopped).expect("stopped wait");
-                }
-                Ok(0)
-            }
-
-            fn wake_handle(&self) -> Box<dyn Fn() + Send + Sync> {
-                let stopped = Arc::clone(&self.stopped);
-                Box::new(move || {
-                    let (lock, condition) = &*stopped;
-                    *lock.lock().expect("stopped") = true;
-                    condition.notify_all();
-                })
-            }
-        }
-
-        struct CountingUdp {
-            sent: Arc<AtomicUsize>,
-        }
-
-        impl EspUdp for CountingUdp {
-            fn send(&mut self, packet: &[u8]) -> io::Result<usize> {
-                self.sent.fetch_add(1, Ordering::SeqCst);
-                Ok(packet.len())
-            }
-
-            fn recv(&mut self, _buffer: &mut [u8]) -> io::Result<usize> {
-                Err(io::Error::from(io::ErrorKind::WouldBlock))
-            }
-        }
-
-        struct StopAfter {
-            sent: Arc<AtomicUsize>,
-            target: usize,
-        }
-
-        impl TunnelControl for StopAfter {
-            fn should_stop(&self) -> bool {
-                self.sent.load(Ordering::SeqCst) >= self.target
-            }
-        }
-
-        #[test]
-        fn the_esp_loop_drains_both_channel_packets_without_waiting_for_the_reader() {
-            let source =
-                BlockingDevice::new(vec![framed(&ipv4_packet(1)), framed(&ipv4_packet(2))]);
-            let mut reader = aevan_tun::platform::DeviceReader::spawn_source(
-                Box::new(source),
-                "utun-test".to_owned(),
-                Some(11),
-            )
-            .expect("reader");
-
-            let now = Instant::now();
-            let mut session = EspSession::new(
-                material(),
-                [0x5a; ESP_IV_LEN],
-                EspSessionConfig {
-                    keepalive_interval_seconds: 30,
-                    peer_timeout: Duration::from_secs(90),
-                    rekey_policy: RekeyPolicy::new(None, None, 0, 0),
-                    rekey_grace: Duration::from_secs(60),
-                    mtu: 1396,
-                },
-                now,
-            );
-            let sent = Arc::new(AtomicUsize::new(0));
-            let mut udp = CountingUdp {
-                sent: Arc::clone(&sent),
-            };
-            let control = StopAfter {
-                sent: Arc::clone(&sent),
-                target: 2,
-            };
-            let mut device: Box<dyn Device> = Box::new(NoopBackend::default());
-
-            let started = Instant::now();
-            {
-                let mut adapter = ChannelEspDevice {
-                    inner: &mut device,
-                    reader: &mut reader,
-                };
-                run_esp(&mut session, &mut udp, &mut adapter, &control).expect("ESP loop");
-            }
-            assert_eq!(sent.load(Ordering::SeqCst), 2, "both packets were sent");
-            assert!(
-                started.elapsed() < Duration::from_secs(2),
-                "the loop must not wait for the reader's blocking read"
-            );
-
-            let shutdown = Instant::now();
-            assert!(reader.shutdown(), "shutdown must join the reader");
-            assert!(
-                shutdown.elapsed() < aevan_tun::platform::reader::JOIN_TIMEOUT,
-                "the reader must stop promptly"
-            );
-        }
-
-        #[test]
-        fn an_empty_channel_is_quiet_and_a_stopped_reader_is_reported() {
-            let source = BlockingDevice::new(Vec::new());
-            let mut reader = aevan_tun::platform::DeviceReader::spawn_source(
-                Box::new(source),
-                "utun-test".to_owned(),
-                None,
-            )
-            .expect("reader");
-            // Force the reader to finish without a packet.
-            reader.shutdown();
-
-            let mut device: Box<dyn Device> = Box::new(NoopBackend::default());
-            let mut adapter = ChannelEspDevice {
-                inner: &mut device,
-                reader: &mut reader,
-            };
-            let mut buffer = [0u8; 2048];
-            let result = adapter.recv(&mut buffer);
-            let quiet_or_stopped = match &result {
-                Ok(None) => true,
-                Err(error) => error.kind() == io::ErrorKind::BrokenPipe,
-                Ok(Some(_)) => false,
-            };
-            assert!(
-                quiet_or_stopped,
-                "an empty queue is either quiet or reports the stopped reader"
-            );
-        }
-
-        #[test]
-        fn the_channel_adapter_copies_a_queued_packet() {
-            let packet = ipv4_packet(9);
-            let source = BlockingDevice::new(vec![framed(&packet)]);
-            let mut reader = aevan_tun::platform::DeviceReader::spawn_source(
-                Box::new(source),
-                "utun-test".to_owned(),
-                None,
-            )
-            .expect("reader");
-            let mut device: Box<dyn Device> = Box::new(NoopBackend::default());
-            let mut adapter = ChannelEspDevice {
-                inner: &mut device,
-                reader: &mut reader,
-            };
-            let deadline = Instant::now() + Duration::from_secs(2);
-            let mut buffer = [0u8; 2048];
-            let mut received = None;
-            while Instant::now() < deadline && received.is_none() {
-                match adapter.recv(&mut buffer) {
-                    Ok(Some(length)) => received = Some(buffer[..length].to_vec()),
-                    Ok(None) => thread::sleep(Duration::from_millis(1)),
-                    Err(error) => panic!("adapter read failed: {error}"),
-                }
-            }
-            assert_eq!(received.as_deref(), Some(packet.as_slice()));
-            assert!(reader.shutdown());
-        }
     }
 
     #[test]
