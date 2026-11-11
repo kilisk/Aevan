@@ -346,6 +346,20 @@ notarisation. To proceed:
    xattr -dr com.apple.quarantine /Applications/Aevan.app
    ```
 
+If macOS starts the still-quarantined app from a translocated directory such as
+`/private/var/folders/.../AppTranslocation/.../Aevan.app`, **Start daemon** does
+not attempt registration and does not claim the plist is missing. The banner
+names the temporary location and asks you to move `Aevan.app` to
+`/Applications`, run the `xattr` command above, and relaunch. The successful
+path resolves the bundle root with `NSBundle.mainBundle.bundleURL` (falling
+back to the nearest ancestor of the executable that contains
+`Contents/Info.plist`) and then checks these exact paths in order:
+`<bundle>` itself, `<bundle>/Contents/Library/LaunchDaemons`,
+`<bundle>/Contents/Library/LaunchDaemons/com.github.kilisk.aevand.plist`
+(readable), and that plist's `Label` (`com.github.kilisk.aevand`). A failure
+names the step, the checked path and the resolved bundle root, and the same
+text is appended to `~/Library/Logs/Aevan/daemon-start.log`.
+
 Do not disable Gatekeeper globally. To verify the download independently:
 
 ```sh

@@ -47,6 +47,30 @@ when it runs as root (`/Library/Application Support/Aevan/aevan.sock`, mode
 per-user `~/Library/Application Support/aevan/aevan.sock`. `aevan status`
 prints the endpoint that answered.
 
+### macOS bundle check and translocation
+
+Before registering, the GUI resolves the app bundle the way macOS does:
+`NSBundle.mainBundle.bundleURL`, falling back to walking up from the running
+executable to the nearest ancestor that contains `Contents/Info.plist`. It then
+checks, in order: the bundle root exists, `Contents/Library/LaunchDaemons`
+exists, `Contents/Library/LaunchDaemons/com.github.kilisk.aevand.plist` exists
+and is readable, and its `Label` is `com.github.kilisk.aevand`. A failure names
+the failing step, the exact plist path and the resolved bundle root, for
+example `expected <bundle>/Contents/Library/LaunchDaemons/com.github.kilisk.aevand.plist
+inside the app bundle at <bundle>`. The same text is written to
+`~/Library/Logs/Aevan/daemon-start.log`, so copying the banner is enough to
+diagnose it.
+
+A quarantined app is run by macOS from a translocated path such as
+`/private/var/folders/.../AppTranslocation/.../Aevan.app`. The GUI detects
+`/AppTranslocation/` in the resolved root and reports that as its own outcome —
+never "the plist is missing". Move `Aevan.app` to `/Applications`, remove the
+quarantine attribute, and relaunch:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Aevan.app
+```
+
 ```sh
 cargo run -p aevan-gui
 cargo run -p aevan-gui -- --headless
