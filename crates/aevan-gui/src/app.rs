@@ -2161,6 +2161,7 @@ mod tests {
             ("console.rs", include_str!("console.rs")),
             ("daemon_bridge.rs", include_str!("daemon_bridge.rs")),
             ("instance.rs", include_str!("instance.rs")),
+            ("macos_bundle.rs", include_str!("macos_bundle.rs")),
             ("macos_elevate.rs", include_str!("macos_elevate.rs")),
             ("macos_service.rs", include_str!("macos_service.rs")),
             ("main.rs", include_str!("main.rs")),
@@ -2214,6 +2215,7 @@ mod tests {
         for source in [
             include_str!("app.rs"),
             include_str!("daemon_bridge.rs"),
+            include_str!("macos_bundle.rs"),
             include_str!("macos_elevate.rs"),
             include_str!("macos_service.rs"),
             include_str!("notifications.rs"),

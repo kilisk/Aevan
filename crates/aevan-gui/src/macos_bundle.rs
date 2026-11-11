@@ -282,3 +282,206 @@ fn plist_label(contents: &str) -> Option<String> {
     let end = after_open.find("</string>")?;
     Some(after_open[..end].trim().to_owned())
 }
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::*;
+    use crate::relaunch::{RegisterMethod, RelaunchOps, ServiceState, StartMethod};
+
+    struct TempDir {
+        path: PathBuf,
+    }
+
+    impl TempDir {
+        fn new(label: &str) -> Self {
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            let unique = NEXT.fetch_add(1, Ordering::Relaxed);
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or(0);
+            let path = std::env::temp_dir().join(format!(
+                "aevan-bundle-{label}-{}-{nanos}-{unique}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&path).expect("create temp dir");
+            Self { path }
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    fn write(path: &Path, contents: &str) {
+        fs::create_dir_all(path.parent().expect("parent")).expect("create parent");
+        fs::write(path, contents).expect("write fixture");
+    }
+
+    fn plist(label: &str) -> String {
+        format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
+<plist version=\"1.0\">\n<dict>\n<key>Label</key>\n<string>{label}</string>\n</dict>\n</plist>\n"
+        )
+    }
+
+    fn fake_bundle(temp: &TempDir, label: &str) -> PathBuf {
+        let root = temp.path().join("Aevan.app");
+        write(&root.join(INFO_PLIST_RELATIVE_PATH), "<plist/>");
+        write(&root.join(PLIST_RELATIVE_PATH), &plist(label));
+        root
+    }
+
+    #[test]
+    fn the_bundle_root_is_found_from_a_nested_executable() {
+        let temp = TempDir::new("nested");
+        let root = fake_bundle(&temp, launchd::LABEL);
+        let executable = root.join("Contents/MacOS/Helpers/aevan-gui");
+
+        assert_eq!(bundle_root_from(&executable), Some(root));
+    }
+
+    #[test]
+    fn there_is_no_bundle_root_without_contents_info_plist() {
+        let temp = TempDir::new("no-bundle");
+        let executable = temp.path().join("target/debug/aevan-gui");
+
+        assert_eq!(bundle_root_from(&executable), None);
+    }
+
+    #[test]
+    fn translocation_is_its_own_outcome_with_the_quarantine_command() {
+        let root =
+            PathBuf::from("/private/var/folders/ab/cdef/T/AppTranslocation/1234-5678/d/Aevan.app");
+        let problem = verify(&root).expect_err("translocated bundles are refused");
+
+        let message = problem.to_string();
+        assert!(matches!(problem, BundleProblem::Translocated { .. }));
+        assert!(message.contains("temporary location"), "{message}");
+        assert!(message.contains("quarantined"), "{message}");
+        assert!(
+            message.contains("xattr -dr com.apple.quarantine /Applications/Aevan.app"),
+            "{message}"
+        );
+        assert!(!message.contains("plist is missing"), "{message}");
+    }
+
+    #[test]
+    fn a_missing_plist_names_the_checked_path_and_bundle_root() {
+        let temp = TempDir::new("missing-plist");
+        let root = temp.path().join("Aevan.app");
+        write(&root.join(INFO_PLIST_RELATIVE_PATH), "<plist/>");
+        fs::create_dir_all(root.join(LAUNCH_DAEMONS_RELATIVE_PATH)).expect("launchdaemons");
+        let checked = root.join(PLIST_RELATIVE_PATH);
+
+        let problem = verify(&root).expect_err("the plist is absent");
+        let message = problem.to_string();
+        assert!(matches!(problem, BundleProblem::MissingPlist { .. }));
+        assert!(message.contains("expected"), "{message}");
+        assert!(
+            message.contains(&checked.display().to_string()),
+            "{message}"
+        );
+        assert!(message.contains(&root.display().to_string()), "{message}");
+    }
+
+    #[test]
+    fn a_missing_launchdaemons_directory_is_its_own_failure() {
+        let temp = TempDir::new("missing-launchdaemons");
+        let root = temp.path().join("Aevan.app");
+        write(&root.join(INFO_PLIST_RELATIVE_PATH), "<plist/>");
+
+        let problem = verify(&root).expect_err("no LaunchDaemons directory");
+        assert!(matches!(
+            problem,
+            BundleProblem::MissingLaunchDaemons { .. }
+        ));
+        let message = problem.to_string();
+        assert!(
+            message.contains(
+                &root
+                    .join(LAUNCH_DAEMONS_RELATIVE_PATH)
+                    .display()
+                    .to_string()
+            ),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn a_label_mismatch_is_reported_separately() {
+        let temp = TempDir::new("label");
+        let root = fake_bundle(&temp, "com.example.other");
+
+        let problem = verify(&root).expect_err("the label does not match");
+        assert!(matches!(problem, BundleProblem::LabelMismatch { .. }));
+        let message = problem.to_string();
+        assert!(message.contains("com.example.other"), "{message}");
+        assert!(message.contains(launchd::LABEL), "{message}");
+        assert!(message.contains("Label"), "{message}");
+        assert!(!message.contains("missing"), "{message}");
+    }
+
+    #[test]
+    fn a_valid_bundle_passes_every_check_and_reaches_registration() {
+        let temp = TempDir::new("valid");
+        let root = fake_bundle(&temp, launchd::LABEL);
+
+        let bundle = verify(&root).expect("a complete bundle is accepted");
+        assert_eq!(bundle.root, root);
+        assert_eq!(bundle.plist, root.join(PLIST_RELATIVE_PATH));
+
+        let ops = FakeOps::default();
+        let report = crate::relaunch::relaunch(&ops).expect("registration is reached");
+        assert_eq!(report.method, StartMethod::Registered);
+        assert_eq!(ops.registers.get(), 1);
+    }
+
+    #[derive(Default)]
+    struct FakeOps {
+        statuses: Cell<usize>,
+        registers: Cell<usize>,
+    }
+
+    impl RelaunchOps for FakeOps {
+        fn socket_answers(&self) -> bool {
+            false
+        }
+
+        fn service_status(&self) -> Result<ServiceState, String> {
+            let call = self.statuses.get();
+            self.statuses.set(call + 1);
+            Ok(if call == 0 {
+                ServiceState::NotRegistered
+            } else {
+                ServiceState::Enabled
+            })
+        }
+
+        fn register(&self) -> Result<RegisterMethod, String> {
+            self.registers.set(self.registers.get() + 1);
+            Ok(RegisterMethod::ServiceManagement)
+        }
+
+        fn kickstart(&self) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn wait_ready(&self) -> Result<(), String> {
+            Ok(())
+        }
+    }
+}
