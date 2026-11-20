@@ -89,7 +89,7 @@ Run this in your SSH shell with `curl` installed:
 curl -fsSL https://raw.githubusercontent.com/kilisk/Aevan/main/scripts/install-linux.sh | bash
 ```
 
-The [installer script](scripts/install-linux.sh) checks the **v0.2.19**
+The [installer script](scripts/install-linux.sh) checks the **v0.2.20**
 pre-release `.deb` against the release's SHA-256 manifest before using `sudo`
 for APT. It also works from a root shell. No GUI session or Rust toolchain is
 needed.

@@ -4,7 +4,7 @@
 install_aevan() (
   set -euo pipefail
 
-  local version=0.2.19
+  local version=0.2.20
   local deb="aevan_${version}_amd64.deb"
   local base="https://github.com/kilisk/Aevan/releases/download/v${version}"
   local deb_sha256
