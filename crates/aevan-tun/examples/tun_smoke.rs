@@ -1,10 +1,11 @@
-//! Open a real TUN device and close it without sending anything.
+//! Exercise a real TUN device without contacting a gateway.
 //!
 //! This is the device proof that CI runs under `sudo` on Ubuntu and macOS:
 //! opening a `utun` or `/dev/net/tun` interface is the part that cannot be
 //! exercised by offline unit tests. Success means the kernel created the
-//! interface. Run `--linux-route` in a disposable network namespace to also
-//! exercise address, MTU, route setup and teardown without sending packets.
+//! interface and its empty receive queue does not block. Run `--linux-route`
+//! in a disposable network namespace to also exercise address, MTU, route
+//! setup, a local test datagram and teardown.
 //!
 //! Exit codes:
 //!
@@ -38,10 +39,30 @@ fn config() -> DeviceConfig {
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
+fn read_available(device: &mut dyn Device, mut observe: impl FnMut(&[u8])) -> Result<(), TunError> {
+    let mut buffer = [0; 4096];
+    for _ in 0..64 {
+        match device.recv(&mut buffer) {
+            Ok(size) => observe(&buffer[..size]),
+            Err(TunError::Io(error)) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err(TunError::Io(std::io::Error::other(
+        "TUN queue did not report WouldBlock after draining",
+    )))
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn open_and_close(config: DeviceConfig) -> Result<(String, Option<isize>), TunError> {
     let mut device = SmokeDevice::open(config)?;
     let name = device.name().to_owned();
     let handle = device.wait_handle();
+    println!("tun_smoke: checking that an empty TUN read returns WouldBlock");
+    read_available(&mut device, |_| {})?;
+    println!("tun_smoke: empty TUN read returned WouldBlock");
     device.close()?;
     Ok((name, handle))
 }
@@ -75,6 +96,20 @@ fn linux_route_smoke() -> Result<(), TunError> {
             "route did not use the kernel-assigned TUN interface: expected {expected}"
         ))));
     }
+    let socket = std::net::UdpSocket::bind((Ipv4Addr::new(192, 0, 2, 1), 0))?;
+    let payload = b"aevan-tun-smoke";
+    socket.send_to(payload, (Ipv4Addr::new(198, 51, 100, 1), 53))?;
+    println!("tun_smoke: reading a test datagram and then checking the empty queue");
+    let mut saw_payload = false;
+    read_available(&mut device, |packet| {
+        saw_payload |= packet.ends_with(payload);
+    })?;
+    if !saw_payload {
+        return Err(TunError::Io(std::io::Error::other(
+            "test datagram did not reach the TUN device",
+        )));
+    }
+    println!("tun_smoke: Linux TUN delivered a test datagram and returned WouldBlock");
     device.close()?;
     if !lookup()?.trim().is_empty() {
         return Err(TunError::Io(std::io::Error::other(

@@ -15,13 +15,11 @@
 //! pure helpers [`strip_frame`] and [`frame_into`] hold that logic so it can be
 //! unit-tested without a device.
 //!
-//! # Blocking descriptor
+//! # Nonblocking descriptor
 //!
-//! The control socket is left blocking on purpose. A dedicated reader thread
-//! (`crate::platform::reader`) owns the read side with a blocking `read`, the
-//! same pattern WireGuard uses; the ESP loop only writes. Do not set
-//! `O_NONBLOCK` on this descriptor. The assigned interface name and the
-//! descriptor number are logged at info when the device opens.
+//! The ESP loop drains the control socket directly. The empty receive queue
+//! must return `WouldBlock` so the loop can service UDP, timers and shutdown.
+//! The assigned interface name and descriptor are logged when the device opens.
 //!
 //! # Privileges
 //!
@@ -173,10 +171,9 @@ fn map_error(error: io::Error, context: &'static str) -> TunError {
     }
 }
 
-fn set_cloexec(fd: c_int) -> Result<(), TunError> {
+fn configure_descriptor(fd: c_int) -> Result<(), TunError> {
     // Close-on-exec is best effort: it does not affect I/O, but keeps the
-    // tunnel descriptor out of unrelated children. The descriptor itself stays
-    // blocking: the dedicated reader thread depends on a blocking `read`.
+    // tunnel descriptor out of unrelated children.
     // SAFETY: `fd` is the live control socket owned by the caller.
     let descriptor_flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
     if descriptor_flags >= 0 {
@@ -184,6 +181,15 @@ fn set_cloexec(fd: c_int) -> Result<(), TunError> {
         unsafe {
             libc::fcntl(fd, libc::F_SETFD, descriptor_flags | libc::FD_CLOEXEC);
         }
+    }
+    // SAFETY: `fd` is still the live control socket. Preserve the other flags.
+    let status_flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if status_flags < 0 {
+        return Err(last_error("reading utun socket status flags"));
+    }
+    // SAFETY: same live descriptor; F_SETFL accepts an integer flag mask.
+    if unsafe { libc::fcntl(fd, libc::F_SETFL, status_flags | libc::O_NONBLOCK) } < 0 {
+        return Err(last_error("making the utun socket nonblocking"));
     }
     Ok(())
 }
@@ -273,7 +279,7 @@ fn configure(fd: c_int) -> Result<String, TunError> {
     }
 
     let name = read_interface_name(fd)?;
-    set_cloexec(fd)?;
+    configure_descriptor(fd)?;
     Ok(name)
 }
 

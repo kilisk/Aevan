@@ -650,10 +650,15 @@ impl aevan_nc::EspDevice for TunEspDevice<'_> {
     }
 
     fn send(&mut self, packet: &[u8]) -> io::Result<()> {
-        self.inner
-            .send(packet)
-            .map(|_| ())
-            .map_err(io::Error::other)
+        match self.inner.send(packet) {
+            Ok(_) => Ok(()),
+            Err(TunError::Io(error)) if error.kind() == io::ErrorKind::WouldBlock => {
+                tracing::debug!("dropping an inbound packet: TUN would block");
+                Ok(())
+            }
+            Err(TunError::Io(error)) => Err(error),
+            Err(error) => Err(io::Error::other(error)),
+        }
     }
 
     fn wait_handle(&self) -> Option<isize> {

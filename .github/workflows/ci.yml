@@ -116,6 +116,7 @@ jobs:
 
       - name: TUN and route lifecycle smoke (Linux)
         if: runner.os == 'Linux'
+        timeout-minutes: 2
         run: |
           set -euo pipefail
           cargo build --example tun_smoke
@@ -133,6 +134,7 @@ jobs:
 
       - name: TUN smoke (macOS)
         if: runner.os == 'macOS'
+        timeout-minutes: 2
         run: |
           set -euo pipefail
           cargo build --example tun_smoke

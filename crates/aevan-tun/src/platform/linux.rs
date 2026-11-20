@@ -1,16 +1,15 @@
 //! Linux `/dev/net/tun` backend.
 //!
-//! The device is opened with `O_RDWR | O_CLOEXEC` and attached to a TUN
+//! The device is opened with `O_RDWR | O_CLOEXEC | O_NONBLOCK` and attached to a TUN
 //! interface with `TUNSETIFF`. The requested name is `aevan%d`, so the kernel
 //! assigns the unit (for example `aevan0`); the assigned name is read back from
 //! the same `ifreq`. Bring that interface up before the route applier runs.
 //! `IFF_TUN | IFF_NO_PI` selects a layer-3 device without the 4-byte
 //! packet-information prefix, so reads and writes are raw IP packets.
 //!
-//! The descriptor is deliberately left blocking: a dedicated reader thread
-//! (`crate::platform::reader`) owns the read side with a blocking `read`, and
-//! the ESP loop only writes. The assigned interface name and descriptor number
-//! are logged at info when the device opens.
+//! The ESP loop drains the descriptor directly. An empty receive queue must
+//! return `WouldBlock` so the loop can service UDP, timers and shutdown. The
+//! assigned interface name and descriptor are logged when the device opens.
 //!
 //! Creating the interface needs `CAP_NET_ADMIN` (root). `EPERM`/`EACCES` from
 //! `open` or the ioctl becomes [`TunError::Permission`] naming root and
@@ -97,7 +96,12 @@ fn open_tun() -> Result<(c_int, String), TunError> {
     let path = CString::new(DEV_NET_TUN).expect("the device path has no interior NUL");
     // SAFETY: `path` is a NUL-terminated path that outlives the call; the flags
     // are plain integers and a negative result is handled below.
-    let fd = unsafe { libc::open(path.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC) };
+    let fd = unsafe {
+        libc::open(
+            path.as_ptr(),
+            libc::O_RDWR | libc::O_CLOEXEC | libc::O_NONBLOCK,
+        )
+    };
     if fd < 0 {
         return Err(last_error("opening /dev/net/tun"));
     }
