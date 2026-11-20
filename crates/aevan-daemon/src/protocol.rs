@@ -266,6 +266,9 @@ impl RecoveryReport {
 pub struct StatusReport {
     /// State name.
     pub state: String,
+    /// Version of the running daemon, when it reports one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub daemon_version: Option<String>,
     /// Failure reason when `state` is `failed`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
@@ -520,6 +523,14 @@ mod tests {
         for secret in ["password", "token", "cookie", "key", "spi"] {
             assert!(!json.contains(secret), "status leaked {secret}: {json}");
         }
+    }
+
+    #[test]
+    fn status_from_an_older_daemon_can_omit_the_daemon_version() {
+        let status: StatusReport = serde_json::from_str(
+            r#"{"state":"disconnected","route_count":0,"dns":[],"bytes_in":0,"bytes_out":0,"uptime_secs":0}"#,
+        ).expect("older status");
+        assert!(status.daemon_version.is_none());
     }
 
     #[test]

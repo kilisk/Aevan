@@ -330,6 +330,7 @@ impl SharedStatus {
             .clone();
         StatusReport {
             state: state.name().to_owned(),
+            daemon_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
             reason: state.reason().map(str::to_owned),
             profile: session
                 .as_ref()

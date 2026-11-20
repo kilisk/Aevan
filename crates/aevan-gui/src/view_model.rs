@@ -1588,6 +1588,7 @@ impl ViewModel {
         }
         self.daemon_start_busy = true;
         self.quit_confirmation = None;
+        self.notice = None;
         true
     }
 
@@ -1831,7 +1832,9 @@ impl ViewModel {
         self.status = Some(report);
 
         match self.state {
-            ConnectionState::Connected => self.set_screen(Screen::Connected),
+            ConnectionState::Connected if self.screen != Screen::Settings => {
+                self.set_screen(Screen::Connected);
+            }
             ConnectionState::Disconnected | ConnectionState::Failed { .. } => {
                 self.clear_secrets();
                 if self.screen == Screen::Connected {
@@ -3373,6 +3376,8 @@ mod tests {
         assert_eq!(vm.primary_action(), Some(PrimaryAction::TotpSave));
 
         vm.apply_status(connected_report());
+        assert_eq!(vm.screen, Screen::Settings, "polling must leave About open");
+        vm.set_screen(Screen::Connected);
         assert_eq!(vm.primary_action(), Some(PrimaryAction::Disconnect));
 
         vm.set_screen(Screen::Profiles);

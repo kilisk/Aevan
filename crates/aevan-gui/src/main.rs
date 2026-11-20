@@ -11,6 +11,7 @@
 //! live in [`view_model`], which has no toolkit types and is unit-tested
 //! offline.
 
+mod about;
 mod app;
 #[cfg(any(target_os = "macos", test))]
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]

@@ -14,6 +14,7 @@ use aevan_core::{logging, ProfileStore};
 use aevan_daemon::client::ClientError;
 use aevan_daemon::StatusReport;
 
+use crate::about::About;
 use crate::daemon_bridge::{self, ConnectOutcome};
 use crate::notifications::{DesktopNotifier, Notifier};
 use crate::tray::{self, TrayEvent};
@@ -82,6 +83,8 @@ pub enum Message {
     ReloadProfiles,
     LogLevelSelected(aevan_core::LogLevel),
     OpenLogFolder,
+    CopyDiagnostics,
+    DiagnosticsUnavailable,
     TotpInput(SecretField),
     TotpValidate,
     TotpSave,
@@ -339,12 +342,22 @@ impl App {
             Message::ShowSettings => {
                 self.vm.set_screen(Screen::Settings);
                 self.vm.notice = None;
+                if !self.poll_in_flight {
+                    self.poll_in_flight = true;
+                    return poll_status_task();
+                }
             }
             Message::SettingsForProfile(name) => {
                 self.vm.select_for_settings(&name, now_unix());
+                let mut tasks = Vec::new();
                 if self.vm.selected.is_some() {
-                    return load_totp_task(name);
+                    tasks.push(load_totp_task(name));
                 }
+                if !self.poll_in_flight {
+                    self.poll_in_flight = true;
+                    tasks.push(poll_status_task());
+                }
+                return Task::batch(tasks);
             }
             Message::BeginAddProfile => self.vm.begin_add_profile(),
             Message::BeginEditProfile(name) => self.vm.begin_edit_profile(&name),
@@ -479,6 +492,25 @@ impl App {
                 if let Err(message) = crate::open_folder::open_log_folder() {
                     self.vm.notice = Some(message);
                 }
+            }
+            Message::CopyDiagnostics => {
+                let about = About::for_view_model(&self.vm);
+                return Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || {
+                            about
+                                .diagnostics(&logging::tail("aevan-gui", logging::DIAGNOSTIC_LINES))
+                        })
+                        .await
+                    },
+                    |result| match result {
+                        Ok(text) => Message::CopyText(text),
+                        Err(_) => Message::DiagnosticsUnavailable,
+                    },
+                );
+            }
+            Message::DiagnosticsUnavailable => {
+                self.vm.notice = Some("Could not collect diagnostics.".into());
             }
             Message::TotpInput(value) => self.vm.set_totp_input(value.into_string()),
             Message::TotpValidate => {
@@ -1356,7 +1388,6 @@ impl App {
                     .padding([6, 14]),
             );
         }
-        view = view.push(detail_row("Daemon endpoint", &self.vm.endpoint));
         #[cfg(target_os = "macos")]
         if let Some(state) = &self.daemon_service {
             view = view.push(detail_row("Daemon service", state.label()));
@@ -1497,6 +1528,17 @@ impl App {
                 }
             }
         }
+
+        view = view.push(text("About").size(17));
+        for (label, value) in About::for_view_model(&self.vm).rows() {
+            view = view.push(detail_row(label, value));
+        }
+        view = view.push(
+            button(text("Copy diagnostics").size(14))
+                .on_press(Message::CopyDiagnostics)
+                .style(button::secondary)
+                .padding([6, 14]),
+        );
 
         view = view.push(
             button(text("Back").size(14))
