@@ -896,6 +896,11 @@ impl UdpEspTransport {
     pub fn peer_addr(&self) -> io::Result<SocketAddr> {
         self.socket.peer_addr()
     }
+
+    /// Borrow the connected UDP socket for platform-specific path queries.
+    pub fn socket(&self) -> &UdpSocket {
+        &self.socket
+    }
 }
 
 impl fmt::Debug for UdpEspTransport {

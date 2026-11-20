@@ -63,6 +63,20 @@ pub fn tune_udp_socket(handle: WaitHandle) {
     imp::tune_udp_socket(handle)
 }
 
+/// The known outer path MTU of an already connected UDP socket, when available.
+/// The caller keeps the socket alive for this query.
+pub fn udp_path_mtu(socket: &std::net::UdpSocket) -> Option<u16> {
+    #[cfg(target_os = "linux")]
+    {
+        linux::udp_path_mtu(socket)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = socket;
+        None
+    }
+}
+
 /// What the platform probe can establish without opening a device.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Availability {

@@ -77,7 +77,7 @@ pub struct ConnectionInfo {
     pub address: Option<IpAddr>,
     /// Prefix length for the address.
     pub prefix_len: u8,
-    /// Negotiated MTU.
+    /// Effective MTU, after accounting for underlay encapsulation if known.
     pub mtu: Option<u16>,
     /// Number of applied routes.
     pub route_count: usize,
@@ -243,10 +243,10 @@ pub fn connect_session<C: TunnelControl>(
         "ESP initial exchange: KMP configuration"
     );
 
-    let config = decode_config(message).ok_or_else(|| {
+    let mut config = decode_config(message).ok_or_else(|| {
         AevanError::Unsupported("the KMP 301 configuration could not be decoded".into())
     })?;
-    let plan = ApplyPlan::from_ncp(&config, DEFAULT_DEVICE.to_owned())?;
+    let mut plan = ApplyPlan::from_ncp(&config, DEFAULT_DEVICE.to_owned())?;
 
     if options.dry_run {
         control.planned(&plan);
@@ -256,6 +256,28 @@ pub fn connect_session<C: TunnelControl>(
         return Ok(());
     }
 
+    let proposal = config
+        .esp
+        .as_ref()
+        .ok_or_else(|| AevanError::Unsupported("KMP 301 has no ESP proposal".into()))?;
+    let port = proposal.udp_port.unwrap_or(DEFAULT_ESP_PORT);
+    let mut transport = UdpEspTransport::connect(peer, port)
+        .map_err(|error| AevanError::Network(format!("ESP UDP socket: {error}")))?;
+    if let (Some(path_mtu), Some(auth)) = (
+        platform::udp_path_mtu(transport.socket()),
+        proposal.authentication,
+    ) {
+        config.mtu = capped_mtu(
+            config.mtu,
+            path_mtu,
+            peer.is_ipv4(),
+            plan.address.is_some_and(|address| address.is_ipv6())
+                || plan.routes.iter().any(|route| route.destination.is_ipv6()),
+            auth,
+        );
+    }
+    // Keep the OS interface, initial KMP 303 and rekey replies in agreement.
+    plan.mtu = config.mtu.filter(|mtu| *mtu != 0);
     let esp = EspSetup::negotiate(&config, &mut |bytes| handshake.write_all(bytes))?;
 
     let mut device = match platform::open(plan.device_config()) {
@@ -299,8 +321,6 @@ pub fn connect_session<C: TunnelControl>(
     guard.apply_plan(&plan)?;
     control.connected(&ConnectionInfo::from_plan(&plan, &profile.name));
 
-    let mut transport = UdpEspTransport::connect(peer, esp.udp_port)
-        .map_err(|error| AevanError::Network(format!("ESP UDP socket: {error}")))?;
     tracing::info!(
         local = ?transport.local_addr().ok(),
         remote = ?transport.peer_addr().ok(),
@@ -497,7 +517,7 @@ pub fn local_hostname() -> String {
 struct EspSetup {
     material: EspSessionMaterial,
     initial_iv: [u8; 16],
-    udp_port: u16,
+
     keepalive_seconds: u64,
     peer_timeout: Duration,
     rekey_policy: RekeyPolicy,
@@ -574,7 +594,7 @@ impl EspSetup {
                 inbound_keys,
             },
             initial_iv,
-            udp_port: proposal.udp_port.unwrap_or(DEFAULT_ESP_PORT),
+
             keepalive_seconds,
             peer_timeout: Duration::from_secs(keepalive_seconds * 3),
             rekey_policy,
@@ -582,6 +602,38 @@ impl EspSetup {
             mtu: config.mtu.unwrap_or(0),
         })
     }
+}
+
+/// Fit an inner packet plus CBC padding, the ESP trailer and headers in the
+/// outer path MTU. The UDP payload starts directly with the ESP header.
+fn esp_inner_mtu(outer: u16, outer_ipv4: bool, auth: aevan_nc::EspAuthentication) -> u16 {
+    let ip_header = if outer_ipv4 { 20 } else { 40 };
+    let overhead = ip_header + 8 + aevan_nc::ESP_HEADER_LEN + auth.icv_len();
+    let block = aevan_nc::ESP_IV_LEN;
+    let ciphertext = (usize::from(outer).saturating_sub(overhead) / block) * block;
+    ciphertext.saturating_sub(2) as u16
+}
+
+fn capped_mtu(
+    advertised: Option<u16>,
+    outer: u16,
+    outer_ipv4: bool,
+    inner_ipv6: bool,
+    auth: aevan_nc::EspAuthentication,
+) -> Option<u16> {
+    let budget = esp_inner_mtu(outer, outer_ipv4, auth);
+    let minimum = if inner_ipv6 { 1280 } else { 576 };
+    if budget < minimum {
+        tracing::warn!(outer_mtu = outer, budget, minimum, "ESP path MTU is too small for the configured inner IP families; leaving the negotiated MTU unchanged");
+        return advertised;
+    }
+    let effective = advertised
+        .filter(|mtu| *mtu != 0)
+        .map_or(budget, |mtu| mtu.min(budget));
+    if Some(effective) != advertised {
+        tracing::info!(outer_mtu = outer, advertised_mtu = ?advertised, effective_mtu = effective, "capped tunnel MTU to fit the ESP path");
+    }
+    Some(effective)
 }
 
 fn esp_session_error(error: EspSessionError) -> AevanError {
@@ -763,6 +815,39 @@ impl Drop for ConnectGuard {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn esp_mtu_budget_accounts_for_cbc_alignment_and_outer_ip_family() {
+        use aevan_nc::EspAuthentication;
+
+        let auth = EspAuthentication::HmacSha1;
+        assert_eq!(super::esp_inner_mtu(1280, true, auth), 1214);
+        assert_eq!(super::esp_inner_mtu(1280, false, auth), 1182);
+        assert_eq!(super::esp_inner_mtu(1500, true, auth), 1422);
+        assert_eq!(super::esp_inner_mtu(63, true, auth), 0);
+    }
+
+    #[test]
+    fn path_mtu_cap_preserves_lower_gateway_values_and_ipv6_minimum() {
+        use aevan_nc::EspAuthentication;
+
+        let auth = EspAuthentication::HmacSha1;
+        assert_eq!(
+            super::capped_mtu(Some(1396), 1280, true, false, auth),
+            Some(1214)
+        );
+        assert_eq!(
+            super::capped_mtu(Some(1200), 1280, true, false, auth),
+            Some(1200)
+        );
+        assert_eq!(
+            super::capped_mtu(Some(0), 1280, true, false, auth),
+            Some(1214)
+        );
+        assert_eq!(
+            super::capped_mtu(Some(1396), 1280, true, true, auth),
+            Some(1396)
+        );
+    }
+    #[test]
     fn the_assigned_interface_name_wins_over_the_configured_one() {
         // macOS hands out the next free utun unit, so configuring the
         // requested name would configure an interface we do not own.
@@ -873,7 +958,7 @@ mod tests {
         assert_eq!(negotiation.payload.len(), 86);
         let reply = aevan_nc::KmpFrame::parse_outbound(&sent[1]).expect("303");
         assert_eq!(reply.number, 303);
-        assert_eq!(setup.udp_port, 4500);
+
         assert_eq!(setup.material.outbound_spi, 0x1a2b_3c4d);
         // The fixture advertises a 3600 s lifetime; rekey starts at 80 percent.
         assert_eq!(setup.rekey_policy.lifetime_seconds, Some(3600));
@@ -884,6 +969,27 @@ mod tests {
         let debug = format!("{:?}", setup.material);
         assert!(debug.contains("redacted"));
         assert!(!debug.contains("0, 1, 2, 3"));
+    }
+
+    #[test]
+    fn the_path_mtu_cap_reaches_the_config_reply_and_device_plan() {
+        let mut config = ncp();
+        let auth = config
+            .esp
+            .as_ref()
+            .and_then(|esp| esp.authentication)
+            .expect("authentication");
+        config.mtu = super::capped_mtu(config.mtu, 1280, true, false, auth);
+        let plan = ApplyPlan::from_ncp(&config, "aevan0".into()).expect("plan");
+        let mut sent = Vec::new();
+        let setup = EspSetup::negotiate(&config, &mut |bytes| {
+            sent.push(bytes.to_vec());
+            Ok(())
+        })
+        .expect("setup");
+        assert_eq!(plan.device_config().mtu, 1214);
+        assert_eq!(setup.mtu, 1214);
+        assert_eq!(sent[1], aevan_nc::client_config_reply(1214));
     }
 
     #[test]

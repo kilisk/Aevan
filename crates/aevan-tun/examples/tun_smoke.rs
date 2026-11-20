@@ -72,6 +72,30 @@ fn linux_route_smoke() -> Result<(), TunError> {
     use std::net::Ipv4Addr;
     use std::process::Command;
 
+    if std::fs::read_link("/proc/self/ns/net")? == std::fs::read_link("/proc/1/ns/net")? {
+        return Err(TunError::Io(std::io::Error::other(
+            "run --linux-route inside an isolated network namespace (unshare --net)",
+        )));
+    }
+    // The caller runs this in a disposable namespace. Give the synthetic
+    // outer socket a route with the same MTU as a constrained underlay.
+    let status = Command::new("ip")
+        .args(["link", "set", "dev", "lo", "mtu", "1280", "up"])
+        .status()?;
+    if !status.success() {
+        return Err(TunError::Io(std::io::Error::other(
+            "failed to prepare the test underlay",
+        )));
+    }
+    let underlay = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))?;
+    underlay.connect((Ipv4Addr::LOCALHOST, 9))?;
+    if aevan_tun::platform::udp_path_mtu(&underlay) != Some(1280) {
+        return Err(TunError::Io(std::io::Error::other(
+            "connected UDP socket did not report its 1280-byte path MTU",
+        )));
+    }
+    println!("tun_smoke: Linux UDP socket reported a 1280-byte path MTU");
+
     let destination = Ipv4Addr::new(198, 51, 100, 0);
     let mut device = SmokeDevice::open(config())?;
     device.set_addr(Ipv4Addr::new(192, 0, 2, 1).into(), 32)?;

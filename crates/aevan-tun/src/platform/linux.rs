@@ -37,6 +37,34 @@ use crate::route::Route;
 
 pub use super::unix::{tune_udp_socket, wait_readable};
 
+pub(super) fn udp_path_mtu(socket: &std::net::UdpSocket) -> Option<u16> {
+    use std::os::fd::AsRawFd;
+
+    let (level, option) = if socket.peer_addr().ok()?.is_ipv4() {
+        (libc::IPPROTO_IP, libc::IP_MTU)
+    } else {
+        (libc::IPPROTO_IPV6, libc::IPV6_MTU)
+    };
+    let mut mtu: libc::c_int = 0;
+    let mut length = std::mem::size_of_val(&mtu) as libc::socklen_t;
+    // SAFETY: the socket is borrowed for the call, and both output arguments
+    // describe live, writable storage for this integer socket option.
+    let result = unsafe {
+        libc::getsockopt(
+            socket.as_raw_fd(),
+            level,
+            option,
+            std::ptr::from_mut(&mut mtu).cast(),
+            &mut length,
+        )
+    };
+    if result == 0 && length as usize == std::mem::size_of_val(&mtu) && mtu > 0 {
+        Some(u16::try_from(mtu).unwrap_or(u16::MAX))
+    } else {
+        None
+    }
+}
+
 /// Linux `TUNSETIFF` = `_IOW('T', 202, int)`.
 const TUNSETIFF: c_ulong = 0x4004_54CA;
 /// `IFF_TUN`: a layer-3 tunnel device.
