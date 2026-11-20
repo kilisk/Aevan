@@ -179,7 +179,7 @@ fn perform_logout<T: HttpTransport>(
     let url = match gateway.join("/dana-na/auth/logout.cgi") {
         Ok(url) => url,
         Err(error) => {
-            tracing::debug!(%error, "logout URL could not be built");
+            tracing::debug!("logout URL could not be built");
             return dump::LogoutDump::from_error(&error.to_string());
         }
     };
@@ -190,7 +190,7 @@ fn perform_logout<T: HttpTransport>(
             dump::LogoutDump::from_response(&response)
         }
         Err(error) => {
-            tracing::debug!(%error, "logout request failed");
+            tracing::debug!("logout request failed");
             dump::LogoutDump::from_error(&error.to_string())
         }
     }

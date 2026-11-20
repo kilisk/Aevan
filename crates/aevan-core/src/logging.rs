@@ -241,11 +241,17 @@ pub fn system_settings_path() -> Option<PathBuf> {
     None
 }
 
+#[cfg(windows)]
 fn settings_path() -> Option<PathBuf> {
-    #[cfg(windows)]
-    if let Some(base) = windows::known_folder(&windows::FOLDERID_RoamingAppData) {
-        return Some(base.join("aevan").join(paths::SETTINGS_FILE));
-    }
+    Some(
+        windows::known_folder(&windows::FOLDERID_RoamingAppData)?
+            .join("aevan")
+            .join(paths::SETTINGS_FILE),
+    )
+}
+
+#[cfg(not(windows))]
+fn settings_path() -> Option<PathBuf> {
     if is_root() {
         system_settings_path()
     } else {
