@@ -10,8 +10,9 @@
 //! this module has no way to receive them.
 
 use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Path of the log relative to `$HOME` on macOS.
@@ -35,6 +36,8 @@ pub fn default_path() -> Option<PathBuf> {
 /// One entry to append.
 #[derive(Debug, Clone, Copy)]
 pub struct Entry<'a> {
+    /// Identifier of this start attempt, written on every line.
+    pub attempt: &'a str,
     /// Timestamp text, for example `2026-11-09T12:00:00Z`.
     pub timestamp: &'a str,
     /// The exact command that was run with administrator approval.
@@ -66,21 +69,51 @@ pub fn append(path: &Path, entry: &Entry<'_>) -> io::Result<()> {
     let mut file = options.open(path)?;
     set_mode(path, 0o600)?;
 
-    writeln!(file, "{} aevan daemon start", entry.timestamp)?;
-    writeln!(file, "command: {}", entry.command)?;
+    write_line(
+        &mut file,
+        entry.attempt,
+        &format!("{} aevan daemon start", entry.timestamp),
+    )?;
+    write_line(
+        &mut file,
+        entry.attempt,
+        &format!("command: {}", entry.command),
+    )?;
     match entry.exit_status {
-        Some(status) => writeln!(file, "exit: {status}")?,
-        None => writeln!(file, "exit: unknown")?,
+        Some(status) => write_line(&mut file, entry.attempt, &format!("exit: {status}"))?,
+        None => write_line(&mut file, entry.attempt, "exit: unknown")?,
     }
-    writeln!(file, "stderr: {}", entry.stderr)?;
+    write_line(
+        &mut file,
+        entry.attempt,
+        &format!("stderr: {}", entry.stderr),
+    )?;
     Ok(())
+}
+
+fn write_line(file: &mut fs::File, attempt: &str, text: &str) -> io::Result<()> {
+    for line in text.split('\n') {
+        writeln!(file, "attempt {attempt} {line}")?;
+    }
+    Ok(())
+}
+
+/// A fresh identifier for one daemon-start attempt.
+pub fn new_attempt_id() -> String {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    let sequence = NEXT.fetch_add(1, Ordering::Relaxed);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    format!("{nanos}-{}-{sequence}", std::process::id())
 }
 
 /// Append one entry to the platform default log when it exists.
 ///
-/// Returns the number of bytes requested by the write, or `None` when this
-/// platform has no start log.
+/// Returns `None` when this platform has no start log.
 pub fn record_default(
+    attempt: &str,
     command: &str,
     exit_status: Option<i32>,
     stderr: &str,
@@ -90,6 +123,7 @@ pub fn record_default(
     Some(append(
         &path,
         &Entry {
+            attempt,
             timestamp: &timestamp,
             command,
             exit_status,
@@ -102,7 +136,8 @@ pub fn record_default(
 ///
 /// A missing file is an empty list: the first failed start has nothing to show
 /// yet, and that must not become a second failure.
-pub fn tail(path: &Path, count: usize) -> Vec<String> {
+#[cfg(test)]
+fn tail(path: &Path, count: usize) -> Vec<String> {
     let text = match fs::read_to_string(path) {
         Ok(text) => text,
         Err(_) => return Vec::new(),
@@ -115,14 +150,36 @@ pub fn tail(path: &Path, count: usize) -> Vec<String> {
         .collect()
 }
 
-/// The last `count` lines of the platform default log.
-pub fn tail_default(count: usize) -> Vec<String> {
+/// The last `count` lines written by one attempt, oldest first.
+///
+/// Lines from an earlier attempt never satisfy the prefix, so a previous
+/// failure cannot masquerade as the current one.
+pub fn tail_attempt(path: &Path, attempt: &str, count: usize) -> Vec<String> {
+    let Ok(file) = fs::File::open(path) else {
+        return Vec::new();
+    };
+    let prefix = format!("attempt {attempt} ");
+    let mut lines = std::collections::VecDeque::new();
+    for line in BufReader::new(file).lines().map_while(Result::ok) {
+        if count != 0 && line.starts_with(&prefix) {
+            if lines.len() == count {
+                lines.pop_front();
+            }
+            lines.push_back(line);
+        }
+    }
+    lines.into()
+}
+
+/// The last `count` lines written by one attempt to the default log.
+pub fn tail_attempt_default(attempt: &str, count: usize) -> Vec<String> {
     default_path()
-        .map(|path| tail(&path, count))
+        .map(|path| tail_attempt(&path, attempt, count))
         .unwrap_or_default()
 }
 
 /// Format a start failure with the tail of the log, when there is one.
+#[cfg(test)]
 pub fn with_tail(message: impl Into<String>, lines: Vec<String>) -> String {
     let message = message.into();
     if lines.is_empty() {
@@ -186,6 +243,19 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
     (year, month as u32, day as u32)
 }
 
+/// Format a start failure with only the current attempt's lines.
+pub fn with_attempt(message: impl Into<String>, attempt: &str, lines: Vec<String>) -> String {
+    let message = message.into();
+    if lines.is_empty() {
+        return format!("{message}\nno log lines were written for this attempt ({attempt})");
+    }
+    format!(
+        "{message}\nlast {} lines of the daemon-start log for attempt {attempt}:\n{}",
+        lines.len(),
+        lines.join("\n")
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -211,10 +281,11 @@ mod tests {
         append(
             &path,
             &Entry {
+                attempt: "attempt-1",
                 timestamp: "2026-11-09T12:00:00Z",
                 command: "/bin/launchctl kickstart -k system/com.github.kilisk.aevand",
                 exit_status: Some(1),
-                stderr: "Could not find service",
+                stderr: "Could not find service\nsecond line",
             },
         )
         .expect("write");
@@ -226,6 +297,9 @@ mod tests {
         );
         assert!(text.contains("exit: 1"));
         assert!(text.contains("stderr: Could not find service"));
+        assert!(text
+            .lines()
+            .all(|line| line.starts_with("attempt attempt-1 ")));
         let _ = fs::remove_dir_all(path.parent().expect("parent").parent().expect("parent"));
     }
 
@@ -239,6 +313,7 @@ mod tests {
             append(
                 &path,
                 &Entry {
+                    attempt: "attempt-1",
                     timestamp: "2026-11-09T12:00:00Z",
                     command: "true",
                     exit_status: Some(0),
@@ -268,6 +343,7 @@ mod tests {
             append(
                 &path,
                 &Entry {
+                    attempt: "attempt-1",
                     timestamp: "2026-11-09T12:00:00Z",
                     command: "true",
                     exit_status: Some(index),
@@ -280,6 +356,46 @@ mod tests {
         assert_eq!(lines.len(), BANNER_LINES);
         assert!(lines[1].contains("exit: 4"), "{lines:?}");
         let _ = fs::remove_dir_all(path.parent().expect("parent").parent().expect("parent"));
+    }
+
+    #[test]
+    fn tail_attempt_ignores_lines_from_older_attempts() {
+        let path = temp_path();
+        append(
+            &path,
+            &Entry {
+                attempt: "old",
+                timestamp: "2026-11-09T12:00:00Z",
+                command: "old-command",
+                exit_status: Some(1),
+                stderr: "old failure",
+            },
+        )
+        .expect("old");
+        append(
+            &path,
+            &Entry {
+                attempt: "new",
+                timestamp: "2026-11-09T12:01:00Z",
+                command: "new-command",
+                exit_status: Some(0),
+                stderr: "",
+            },
+        )
+        .expect("new");
+
+        let lines = tail_attempt(&path, "new", BANNER_LINES);
+        assert!(!lines.is_empty());
+        assert!(lines.iter().all(|line| line.contains("attempt new ")));
+        assert!(!lines.iter().any(|line| line.contains("old failure")));
+        assert!(tail_attempt(&path, "missing", BANNER_LINES).is_empty());
+        let _ = fs::remove_dir_all(path.parent().expect("parent").parent().expect("parent"));
+    }
+
+    #[test]
+    fn an_attempt_without_lines_says_so_instead_of_showing_older_ones() {
+        let message = with_attempt("boom", "attempt-9", Vec::new());
+        assert!(message.contains("no log lines were written for this attempt (attempt-9)"));
     }
 
     #[test]

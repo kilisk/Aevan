@@ -221,93 +221,121 @@ fn open_totp_store() -> Result<Box<dyn aevan_secrets::SecretStore>, String> {
 /// elevation. Nothing is started silently: this is only called by the explicit
 /// start action.
 pub fn start_daemon() -> Result<(), String> {
-    let executable = daemon_binary()?;
-    start_daemon_beside(&executable).map_err(|message| {
-        crate::start_log::with_tail(
+    let attempt = crate::start_log::new_attempt_id();
+    let result = daemon_binary().and_then(|executable| start_daemon_beside(&executable, &attempt));
+    result.map_err(|message| {
+        if !cfg!(target_os = "macos") {
+            return message;
+        }
+        crate::start_log::with_attempt(
             message,
-            crate::start_log::tail_default(crate::start_log::BANNER_LINES),
+            &attempt,
+            crate::start_log::tail_attempt_default(&attempt, crate::start_log::BANNER_LINES),
         )
     })
 }
 
 #[cfg(target_os = "macos")]
-fn start_daemon_beside(executable: &Path) -> Result<(), String> {
+fn start_daemon_beside(executable: &Path, attempt: &str) -> Result<(), String> {
     use aevan_daemon::launchd;
 
     use crate::macos_bundle;
     use crate::macos_elevate;
     use crate::macos_service;
-    use crate::relaunch::{self, RegisterMethod, RelaunchOps, StartMethod};
-    use crate::start_log;
-
-    // Resolve the bundle the way macOS does and check every expected artifact
-    // before any registration. A translocated or incomplete bundle must never
-    // reach ServiceManagement, and the failure carries the exact paths checked.
-    let bundle = match macos_bundle::verify_resolved() {
-        Ok(bundle) => bundle,
-        Err(problem) => {
-            let message = problem.to_string();
-            let _ = start_log::record_default(
-                &format!(
-                    "macOS daemon registration bundle check ({})",
-                    macos_bundle::PLIST_RELATIVE_PATH
-                ),
-                None,
-                &message,
-            );
-            tracing::warn!(
-                reason = %message,
-                bundle = problem.bundle_root().map(|root| root.display().to_string()),
-                "the app bundle cannot register the daemon"
-            );
-            return Err(message);
-        }
-    };
-    tracing::debug!(
-        bundle = %bundle.root.display(),
-        plist = %bundle.plist.display(),
-        "verified the bundled daemon plist"
-    );
+    use crate::relaunch::{self, RegisterMethod, RelaunchOps};
 
     struct MacOps<'a> {
         executable: &'a Path,
+        attempt: &'a str,
+    }
+
+    impl MacOps<'_> {
+        fn record(&self, stage: &str, detail: &str) {
+            let _ = crate::start_log::record_default(self.attempt, stage, None, detail);
+            tracing::info!(attempt = self.attempt, stage, detail, "daemon start stage");
+        }
     }
 
     impl RelaunchOps for MacOps<'_> {
         fn socket_answers(&self) -> bool {
-            client::request(&Request::status(), Some(STATUS_TIMEOUT)).is_ok()
+            let result = status();
+            match result {
+                Ok((_, endpoint)) => {
+                    self.record("initial status probe", &format!("answered on {endpoint}"));
+                    true
+                }
+                Err(error) => {
+                    self.record("initial status probe", &error.to_string());
+                    false
+                }
+            }
+        }
+
+        fn use_legacy_start(&self) -> Result<bool, String> {
+            let bundle = macos_bundle::verify_resolved().map_err(|problem| {
+                let message = problem.to_string();
+                self.record("bundle verification failed", &message);
+                tracing::warn!(attempt = self.attempt, bundle = ?problem.bundle_root(), "bundle verification failed");
+                message
+            })?;
+            self.record(
+                "verified bundled plist",
+                &bundle.plist.display().to_string(),
+            );
+            let signature = macos_elevate::bundle_is_adhoc(&bundle.root);
+            self.record(
+                "codesign inspection",
+                match &signature {
+                    Ok(true) => "ad-hoc signature; bypassing ServiceManagement",
+                    Ok(false) => "no ad-hoc signature reported",
+                    Err(error) => error,
+                },
+            );
+            Ok(signature.unwrap_or(false))
+        }
+
+        fn install_legacy(&self) -> Result<(), String> {
+            if macos_elevate::daemon_installed() {
+                self.record(
+                    "legacy plist already present",
+                    macos_elevate::INSTALLED_PLIST,
+                );
+                return Ok(());
+            }
+            self.record("installing legacy plist", macos_elevate::INSTALLED_PLIST);
+            let result = macos_elevate::install(self.executable);
+            self.record(
+                "legacy install result",
+                result.as_ref().err().map_or("succeeded", String::as_str),
+            );
+            result
         }
 
         fn service_status(&self) -> Result<ServiceState, String> {
-            macos_service::status()
+            let result = macos_service::status();
+            self.record(
+                "SMAppService status",
+                match &result {
+                    Ok(state) => state.label(),
+                    Err(error) => error,
+                },
+            );
+            result
         }
 
         fn register(&self) -> Result<RegisterMethod, String> {
-            // An ad-hoc signed bundle cannot use SMAppService at all: it
-            // validates the helper's signature before anything else, so trying
-            // it only produces "job plist not found"/"operation not permitted"
-            // and a message that blames the bundle.
-            let bundle = std::env::current_exe()
-                .ok()
-                .and_then(|executable| crate::macos_bundle::bundle_root_from(&executable));
-            if let Some(bundle) = bundle.as_deref() {
-                if macos_elevate::bundle_is_adhoc(bundle) {
-                    tracing::info!("ad-hoc signed bundle: installing the helper as a LaunchDaemon");
-                    if !macos_elevate::daemon_installed() {
-                        macos_elevate::install(self.executable)?;
-                    }
-                    return Ok(RegisterMethod::LegacyLaunchDaemon);
-                }
-            }
-            match macos_service::register() {
+            let result = macos_service::register();
+            self.record(
+                "SMAppService register",
+                result.as_ref().err().map_or("succeeded", String::as_str),
+            );
+            match result {
                 Ok(()) => Ok(RegisterMethod::ServiceManagement),
                 Err(error) if macos_elevate::should_fall_back(&error) => {
                     // An ad-hoc signed build cannot use SMAppService. If the
                     // legacy plist already exists, macOS started it at boot and
                     // later launches must not prompt again.
-                    if !macos_elevate::daemon_installed() {
-                        macos_elevate::install(self.executable)?;
-                    }
+                    self.install_legacy()?;
                     Ok(RegisterMethod::LegacyLaunchDaemon)
                 }
                 Err(error) => Err(error),
@@ -315,42 +343,39 @@ fn start_daemon_beside(executable: &Path) -> Result<(), String> {
         }
 
         fn kickstart(&self) -> Result<(), String> {
-            launchd::kickstart()
+            let result = launchd::kickstart();
+            self.record(
+                "request to start registered job",
+                result.as_ref().err().map_or("succeeded", String::as_str),
+            );
+            result
         }
 
         fn wait_ready(&self) -> Result<(), String> {
-            client::wait_for_daemon(DAEMON_WAIT)
-                .map_err(|error| format!("the daemon did not answer within 10 seconds: {error}"))
+            let result = client::wait_for_daemon(DAEMON_WAIT)
+                .map_err(|error| format!("the daemon did not answer within 10 seconds: {error}"));
+            self.record(
+                "readiness wait",
+                result
+                    .as_ref()
+                    .err()
+                    .map_or("endpoint answered", String::as_str),
+            );
+            result
         }
     }
 
-    match relaunch::relaunch(&MacOps { executable }) {
-        Ok(report) => {
-            let command = match report.method {
-                StartMethod::LegacyInstalled => {
-                    format!(
-                        "legacy LaunchDaemon install ({})",
-                        macos_elevate::INSTALLED_PLIST
-                    )
-                }
-                _ => format!("SMAppService daemon registration ({:?})", report.method),
-            };
-            let _ = start_log::record_default(&command, None, "");
-            tracing::info!(method = ?report.method, "daemon service start finished");
-            Ok(())
-        }
-        Err(error) => {
-            let _ = start_log::record_default(
-                &format!(
-                    "macOS daemon registration (SMAppService, then legacy fallback, {})",
-                    macos_service::PLIST_NAME
-                ),
-                None,
-                &error,
-            );
-            Err(error)
-        }
-    }
+    let ops = MacOps {
+        executable,
+        attempt,
+    };
+    relaunch::relaunch(&ops)
+        .map(|report| {
+            tracing::info!(attempt, method = ?report.method, "daemon service start finished");
+        })
+        .inspect_err(|error| {
+            tracing::warn!(attempt, %error, "daemon service start failed");
+        })
 }
 
 #[cfg(target_os = "macos")]
@@ -369,7 +394,7 @@ pub fn open_login_items() {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn start_daemon_beside(executable: &Path) -> Result<(), String> {
+fn start_daemon_beside(executable: &Path, _attempt: &str) -> Result<(), String> {
     match elevate::start_elevated(executable, &[]) {
         StartOutcome::Started => client::wait_for_daemon(DAEMON_WAIT)
             .map_err(|error| format!("the daemon did not answer within 10 seconds: {error}")),

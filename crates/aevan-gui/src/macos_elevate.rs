@@ -42,17 +42,18 @@ pub fn should_fall_back(error: &str) -> bool {
 /// "operation not permitted" no matter what is in the bundle. Asking first
 /// avoids a guaranteed failure and the misleading message that came with it.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub fn bundle_is_adhoc(bundle: &Path) -> bool {
+pub fn bundle_is_adhoc(bundle: &Path) -> Result<bool, String> {
     let output = std::process::Command::new("/usr/bin/codesign")
         .args(["-dv", "--verbose=2"])
         .arg(bundle)
         .output();
     match output {
-        Ok(output) => {
+        Ok(output) if output.status.success() => {
             let text = String::from_utf8_lossy(&output.stderr).to_ascii_lowercase();
-            text.contains("signature=adhoc")
+            Ok(text.contains("signature=adhoc"))
         }
-        Err(_) => false,
+        Ok(output) => Err(format!("codesign inspection exited with {}", output.status)),
+        Err(error) => Err(format!("could not run codesign inspection: {error}")),
     }
 }
 

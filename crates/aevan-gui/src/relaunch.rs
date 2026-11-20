@@ -22,7 +22,7 @@ pub enum ServiceState {
     RequiresApproval,
     /// The service has not been registered by this app.
     NotRegistered,
-    /// The bundled plist could not be found.
+    /// ServiceManagement reported the job as not found.
     NotFound,
     /// The state could not be read on this platform or build.
     Unavailable(String),
@@ -60,9 +60,9 @@ impl fmt::Display for ServiceState {
 /// The exact guidance shown when approval is outstanding.
 pub const APPROVAL_REQUIRED_MESSAGE: &str = "The Aevan daemon is registered but needs approval. Open System Settings > Login Items & Extensions, enable Aevan, then try again.";
 
-/// The exact guidance shown when the bundled plist is missing.
+/// The status result is distinct from a failed filesystem check.
 pub const NOT_FOUND_MESSAGE: &str =
-    "The Aevan daemon plist is missing from the app bundle. Reinstall Aevan and try again.";
+    "ServiceManagement reported the Aevan daemon as not found after the bundled plist passed verification.";
 
 /// How the daemon was made available.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,6 +102,14 @@ pub trait RelaunchOps {
     /// Whether the control socket answers a status probe.
     fn socket_answers(&self) -> bool;
 
+    /// Verify the bundle and decide whether to bypass ServiceManagement.
+    fn use_legacy_start(&self) -> Result<bool, String> {
+        Ok(false)
+    }
+
+    /// Install (or reuse) the legacy LaunchDaemon.
+    fn install_legacy(&self) -> Result<(), String>;
+
     /// Read the current `SMAppService` status.
     fn service_status(&self) -> Result<ServiceState, String>;
 
@@ -121,6 +129,11 @@ pub fn relaunch(ops: &impl RelaunchOps) -> Result<StartReport, String> {
         return Ok(StartReport {
             method: StartMethod::AlreadyRunning,
         });
+    }
+
+    if ops.use_legacy_start()? {
+        ops.install_legacy()?;
+        return start_ready(ops, StartMethod::LegacyInstalled);
     }
 
     match ops.service_status()? {
@@ -152,16 +165,18 @@ pub fn relaunch(ops: &impl RelaunchOps) -> Result<StartReport, String> {
             RegisterMethod::LegacyLaunchDaemon => {
                 // RunAtLoad and KeepAlive own the start; a kickstart is
                 // best-effort and the socket answering is the proof.
-                let _ = ops.kickstart();
-                ops.wait_ready()?;
-                Ok(StartReport {
-                    method: StartMethod::LegacyInstalled,
-                })
+                start_ready(ops, StartMethod::LegacyInstalled)
             }
         },
         ServiceState::NotFound => Err(NOT_FOUND_MESSAGE.to_owned()),
         ServiceState::Unavailable(reason) => Err(reason),
     }
+}
+
+fn start_ready(ops: &impl RelaunchOps, method: StartMethod) -> Result<StartReport, String> {
+    let _ = ops.kickstart();
+    ops.wait_ready()?;
+    Ok(StartReport { method })
 }
 
 #[cfg(test)]
@@ -177,6 +192,8 @@ mod tests {
         states: RefCell<VecDeque<ServiceState>>,
         register_error: Option<String>,
         legacy_fallback: bool,
+        adhoc: bool,
+        installs: Cell<usize>,
         sockets: Cell<usize>,
         statuses: Cell<usize>,
         registers: Cell<usize>,
@@ -206,6 +223,15 @@ mod tests {
                 .borrow_mut()
                 .pop_front()
                 .ok_or_else(|| "the fake has no status left".to_owned())
+        }
+
+        fn use_legacy_start(&self) -> Result<bool, String> {
+            Ok(self.adhoc)
+        }
+
+        fn install_legacy(&self) -> Result<(), String> {
+            self.installs.set(self.installs.get() + 1);
+            Ok(())
         }
 
         fn register(&self) -> Result<RegisterMethod, String> {
@@ -315,11 +341,26 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_plist_is_named_and_not_registered() {
+    fn an_initial_not_found_does_not_claim_the_plist_is_missing() {
         let fake = Fake::with_states([ServiceState::NotFound]);
         let error = relaunch(&fake).expect_err("the plist is missing");
-        assert!(error.contains("missing from the app bundle"));
+        assert!(error.contains("ServiceManagement reported"));
+        assert!(error.contains("passed verification"));
         assert_eq!(fake.registers.get(), 0);
+    }
+
+    #[test]
+    fn a_verified_adhoc_bundle_bypasses_an_initial_not_found() {
+        let mut fake = Fake::with_states([ServiceState::NotFound]);
+        fake.adhoc = true;
+        assert_eq!(
+            relaunch(&fake).expect("legacy start").method,
+            StartMethod::LegacyInstalled
+        );
+        assert_eq!(fake.statuses.get(), 0);
+        assert_eq!(fake.registers.get(), 0);
+        assert_eq!(fake.installs.get(), 1);
+        assert_eq!(fake.waits.get(), 1);
     }
 
     #[test]

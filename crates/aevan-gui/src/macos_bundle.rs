@@ -266,7 +266,7 @@ pub fn verify_resolved() -> Result<BundleInfo, BundleProblem> {
 pub fn service_management_not_found_message() -> String {
     match resolve_bundle_root() {
         Some(root) => format!(
-            "ServiceManagement could not find the bundled daemon plist: expected {path} inside the app bundle at {root}.",
+            "ServiceManagement reported the job plist as not found (bundle: {root}; checked path: {path}).",
             path = root.join(PLIST_RELATIVE_PATH).display(),
             root = root.display()
         ),
@@ -474,6 +474,10 @@ mod tests {
         fn register(&self) -> Result<RegisterMethod, String> {
             self.registers.set(self.registers.get() + 1);
             Ok(RegisterMethod::ServiceManagement)
+        }
+
+        fn install_legacy(&self) -> Result<(), String> {
+            Err("unexpected legacy install".into())
         }
 
         fn kickstart(&self) -> Result<(), String> {
