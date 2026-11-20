@@ -198,7 +198,8 @@ deb: build
     cp packaging/linux/postinst packaging/linux/prerm "$stage/DEBIAN/"; \
     chmod 0755 "$stage/DEBIAN/postinst" "$stage/DEBIAN/prerm"; \
     install -m 0755 {{bin_dir}}/aevan {{bin_dir}}/aevand {{bin_dir}}/aevan-gui "$stage/usr/bin/"; \
-    install -m 0644 packaging/linux/aevand.service "$stage/lib/systemd/system/aevand.service"; \
+    sed 's|^ExecStart=/usr/local/bin/aevand$|ExecStart=/usr/bin/aevand|' packaging/linux/aevand.service > "$stage/lib/systemd/system/aevand.service"; \
+    chmod 0644 "$stage/lib/systemd/system/aevand.service"; \
     install -m 0644 packaging/linux/aevan.desktop "$stage/usr/share/applications/aevan.desktop"; \
     install -m 0644 assets/branding/Aevan-64.png "$stage/usr/share/icons/hicolor/64x64/apps/aevan.png"; \
     install -m 0644 assets/branding/Aevan-128.png "$stage/usr/share/icons/hicolor/128x128/apps/aevan.png"; \

@@ -45,7 +45,8 @@ mkdir -p %{buildroot}/usr/bin \
          %{buildroot}/usr/share/icons/hicolor/256x256/apps \
          %{buildroot}/usr/share/icons/hicolor/512x512/apps
 install -m 0755 aevan aevand aevan-gui %{buildroot}/usr/bin/
-install -m 0644 aevand.service %{buildroot}/lib/systemd/system/aevand.service
+sed 's|^ExecStart=/usr/local/bin/aevand$|ExecStart=/usr/bin/aevand|' aevand.service > %{buildroot}/lib/systemd/system/aevand.service
+chmod 0644 %{buildroot}/lib/systemd/system/aevand.service
 install -m 0644 share/applications/aevan.desktop %{buildroot}/usr/share/applications/aevan.desktop
 for size in 64x64 128x128 256x256 512x512; do
     install -m 0644 "share/icons/hicolor/$size/apps/aevan.png" \

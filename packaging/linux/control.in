@@ -5,7 +5,7 @@ Priority: optional
 Architecture: amd64
 Maintainer: aevan contributors <kilisk@users.noreply.github.com>
 Homepage: https://github.com/kilisk/aevan
-Depends: libc6, hicolor-icon-theme, systemd
+Depends: libc6 (>= 2.39), hicolor-icon-theme, systemd
 Description: independent Ivanti Secure Access (Network Connect) client
  aevan is a clean-room command-line client, privileged daemon and GUI for
  Ivanti Secure Access gateways that speak the Network Connect protocol.

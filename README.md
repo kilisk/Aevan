@@ -73,17 +73,45 @@ portable `aevan-<version>-x64.zip`. macOS: open
 `aevan-<version>-arm64+x86_64.dmg`, drag **Aevan** to Applications, eject and
 launch; the first daemon start asks for administrator approval once. The
 `aevan-<version>-arm64+x86_64.pkg` remains for the CLI/system install, and
-`brew install --cask ./Casks/aevan.rb` works from a checkout. Linux: use
-`aevan-<version>-x86_64-linux.tar.gz` and its `install.sh`, or the
-`aevan_<version>_amd64.deb` / `aevan-<version>-1.x86_64.rpm` package.
+`brew install --cask ./Casks/aevan.rb` works from a checkout.
 
-The packages and the DMG are unsigned and not notarised. The `.deb` and `.rpm`
-are built and inspected in CI, but no installer has been installed on a clean
-machine. See
+The packages and the DMG are unsigned and not notarised. See
 [docs/INSTALL.md](docs/INSTALL.md) for privileges, install locations, tray
 availability, uninstall commands and the macOS Gatekeeper workaround,
 [docs/PACKAGING.md](docs/PACKAGING.md) to build the artifacts yourself, and
 [docs/HOMEBREW.md](docs/HOMEBREW.md) for the cask.
+
+### Ubuntu Server (24.04 or newer, amd64)
+
+Run this in your SSH shell with `curl` installed:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/kilisk/Aevan/main/scripts/install-linux.sh | bash
+```
+
+The [installer script](scripts/install-linux.sh) checks the **v0.2.17**
+pre-release `.deb` against the release's SHA-256 manifest before using `sudo`
+for APT. It also works from a root shell. No GUI session or Rust toolchain is
+needed.
+
+The package installs the service but leaves it stopped. On a systemd host,
+check that TUN is available and start the daemon, then run the CLI as your
+normal SSH user:
+
+```sh
+test -c /dev/net/tun && sudo systemctl start aevand.service && aevan status
+```
+
+`disconnected` is expected before the first connection. If the TUN check fails,
+try `sudo modprobe tun`; on a restricted VPS, the host may need to expose the
+device. For automatic daemon startup at boot, run
+`sudo systemctl enable aevand.service` (this does not auto-connect a VPN).
+The system daemon's local control socket is accessible to local users, so use
+it only on a server where you trust those users. Before connecting over SSH,
+make sure you have console access in case a VPN route interrupts the SSH session.
+
+Other Linux x86_64 distributions can use the release tarball and `install.sh`,
+or the `.rpm` on RPM-based distributions. See [docs/INSTALL.md](docs/INSTALL.md).
 
 ## Add a profile
 

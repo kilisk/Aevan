@@ -24,6 +24,9 @@ jobs:
       - name: Check the platform capability matrix
         run: python scripts/platform-matrix.py --check
 
+      - name: Test the Ubuntu bootstrap script
+        run: python scripts/test-install-linux.py -v
+
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -316,7 +319,7 @@ jobs:
   package-linux:
     name: package (linux-x64)
     needs: test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
@@ -368,6 +371,32 @@ jobs:
             grep -qx "$path" /tmp/data-files.txt || { echo "missing $path"; exit 1; }
           done
           echo "debian package structure verified"
+
+      - name: Smoke-test the installed Debian package without a desktop
+        run: |
+          set -euo pipefail
+          deb=(target/dist/aevan_*_amd64.deb)
+          sudo apt-get install -y --no-install-recommends "./${deb[0]}"
+          trap 'sudo journalctl -u aevand.service --no-pager -n 40 || true' ERR
+          if systemctl is-active --quiet aevand.service || systemctl is-enabled --quiet aevand.service; then
+            echo "package must not start or enable aevand"
+            exit 1
+          fi
+          /usr/bin/aevan --version
+          /usr/bin/aevand --version
+          sudo systemctl start aevand.service
+          for _ in $(seq 1 50); do
+            if [ -S /run/aevan/aevan.sock ]; then break; fi
+            sleep 0.1
+          done
+          systemctl is-active --quiet aevand.service
+          aevan status --json | tee /tmp/aevan-deb-status.json
+          jq -e '.endpoint == "/run/aevan/aevan.sock" and .state == "disconnected"' /tmp/aevan-deb-status.json
+          sudo apt-get remove -y aevan
+          if systemctl is-active --quiet aevand.service; then
+            echo "package removal did not stop aevand"
+            exit 1
+          fi
 
       - name: Build RPM package
         run: just rpm
