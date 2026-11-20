@@ -418,7 +418,14 @@ mod tests {
         fake.daemon_present = false;
         let summary = run(&mut fake);
 
-        assert_eq!(summary.daemon, DaemonStatus::MissingBinary(aevand_path()));
+        // A real installation may also exist at the fake's path (notably on
+        // Windows). Its canonical form can include a verbatim path prefix.
+        let executable = aevan_path();
+        let resolved = std::fs::canonicalize(&executable).unwrap_or(executable);
+        assert_eq!(
+            summary.daemon,
+            DaemonStatus::MissingBinary(resolved.with_file_name(DAEMON_NAME))
+        );
         assert!(summary.gui_launched);
         assert!(fake.started.is_empty());
         assert!(
