@@ -78,7 +78,10 @@ pub trait LaunchEnvironment {
     /// The current `aevan` executable, used for accurate missing-file messages.
     fn current_executable(&self) -> PathBuf;
     /// Resolve a sibling executable name beside `aevan`.
-    fn sibling(&self, name: &str) -> Option<PathBuf>;
+    fn sibling(&self, install_root: &Path, name: &str) -> Option<PathBuf> {
+        let candidate = install_root.join(name);
+        candidate.is_file().then_some(candidate)
+    }
     /// Ask the OS to start the daemon elevated.
     fn start_daemon_elevated(&mut self, executable: &Path) -> StartOutcome;
     /// Wait for the control endpoint to answer.
@@ -113,10 +116,12 @@ pub fn run(environment: &mut dyn LaunchEnvironment) -> LaunchSummary {
         };
     }
 
-    let current = environment.current_executable();
+    let executable = environment.current_executable();
+    let current = std::fs::canonicalize(&executable).unwrap_or(executable);
     let current_name = file_name(&current);
-    let daemon = environment.sibling(DAEMON_NAME);
-    let gui = environment.sibling(GUI_NAME);
+    let install_root = current.parent().unwrap_or_else(|| Path::new(""));
+    let daemon = environment.sibling(install_root, DAEMON_NAME);
+    let gui = environment.sibling(install_root, GUI_NAME);
 
     let Some(gui) = gui else {
         return LaunchSummary {
@@ -134,10 +139,7 @@ pub fn run(environment: &mut dyn LaunchEnvironment) -> LaunchSummary {
     } else {
         match daemon {
             None => {
-                let missing = current
-                    .parent()
-                    .map(|parent| parent.join(DAEMON_NAME))
-                    .unwrap_or_else(|| PathBuf::from(DAEMON_NAME));
+                let missing = install_root.join(DAEMON_NAME);
                 notices.push(format!(
                     "{DAEMON_NAME} is missing beside {current_name}; the GUI will show how to start the daemon"
                 ));
@@ -215,12 +217,6 @@ impl LaunchEnvironment for SystemEnvironment {
 
     fn current_executable(&self) -> PathBuf {
         std::env::current_exe().unwrap_or_else(|_| PathBuf::from("aevan"))
-    }
-
-    fn sibling(&self, name: &str) -> Option<PathBuf> {
-        let executable = self.current_executable();
-        let candidate = executable.parent()?.join(name);
-        candidate.is_file().then_some(candidate)
     }
 
     fn start_daemon_elevated(&mut self, executable: &Path) -> StartOutcome {
@@ -328,7 +324,7 @@ mod tests {
             aevan_path()
         }
 
-        fn sibling(&self, name: &str) -> Option<PathBuf> {
+        fn sibling(&self, _install_root: &Path, name: &str) -> Option<PathBuf> {
             match name {
                 DAEMON_NAME if self.daemon_present => Some(aevand_path()),
                 GUI_NAME if self.gui_present => Some(gui_path()),
@@ -471,6 +467,80 @@ mod tests {
         );
         assert!(summary.gui_launched);
         assert!(summary.notices[0].contains("shell refused"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_launch_finds_siblings_beside_the_real_binary() {
+        use std::fs;
+        use std::os::unix::fs::symlink;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        struct SymlinkEnvironment {
+            link: PathBuf,
+            started: Vec<PathBuf>,
+            launched: Vec<PathBuf>,
+        }
+
+        impl LaunchEnvironment for SymlinkEnvironment {
+            fn focus_running_gui(&mut self) -> bool {
+                false
+            }
+
+            fn daemon_reachable(&mut self) -> bool {
+                false
+            }
+
+            fn current_executable(&self) -> PathBuf {
+                self.link.clone()
+            }
+
+            fn start_daemon_elevated(&mut self, executable: &Path) -> StartOutcome {
+                self.started.push(executable.to_path_buf());
+                StartOutcome::Started
+            }
+
+            fn wait_for_daemon(&mut self, _timeout: Duration) -> bool {
+                true
+            }
+
+            fn launch_gui(&mut self, executable: &Path) -> Result<(), String> {
+                self.launched.push(executable.to_path_buf());
+                Ok(())
+            }
+        }
+
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "aevan-launcher-symlink-{}-{nanos}",
+            std::process::id()
+        ));
+        let real = root.join("real");
+        let bin = root.join("bin");
+        fs::create_dir_all(&real).expect("real dir");
+        fs::create_dir_all(&bin).expect("bin dir");
+        for name in [AEVAN_NAME, GUI_NAME, DAEMON_NAME] {
+            fs::write(real.join(name), b"fake").expect("fake binary");
+        }
+        let link = bin.join(AEVAN_NAME);
+        symlink(real.join(AEVAN_NAME), &link).expect("symlink");
+        let real = fs::canonicalize(&real).expect("canonical real dir");
+
+        let mut environment = SymlinkEnvironment {
+            link,
+            started: Vec::new(),
+            launched: Vec::new(),
+        };
+        let summary = run(&mut environment);
+
+        assert!(summary.failure.is_none(), "{:?}", summary.failure);
+        assert!(summary.gui_launched);
+        assert_eq!(environment.started, vec![real.join(DAEMON_NAME)]);
+        assert_eq!(environment.launched, vec![real.join(GUI_NAME)]);
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
