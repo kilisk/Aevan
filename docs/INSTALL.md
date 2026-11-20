@@ -68,6 +68,42 @@ and runs window-only; startup never fails and the window stays fully usable.
 
 ---
 
+## Application logs
+
+The GUI, daemon, and CLI write `aevan-gui.log`, `aevand.log`, and `aevan.log`,
+respectively. Each rotates at 5 MiB and retains three files total: the current
+file and two previous generations. On Unix the log directory is mode `0700`
+and files are `0600`; Windows uses the account's profile ACLs.
+
+| Platform | Application log directory |
+| --- | --- |
+| macOS | `~/Library/Logs/Aevan`; the root daemon writes to `/Library/Logs/Aevan` |
+| Linux | `$XDG_STATE_HOME/aevan/log`, or `~/.local/state/aevan/log`; the root daemon writes to `/var/log/aevan` |
+| Windows | `%LOCALAPPDATA%\Aevan\logs` for the account running the process |
+
+In macOS Console.app, filter for subsystem `com.github.kilisk.aevan`. Linux
+mirrors application records to stderr when it is a terminal, and Windows mirrors
+them to an attached debugger. **Settings → Open log folder** opens the GUI's
+directory. `daemon-start.log` on macOS keeps the full start-attempt history
+separate from rotating application logs.
+
+Use **Settings → Logging → Log level** to raise the saved verbosity, or set
+`log_level = "debug"` in `settings.toml` in the account's configuration folder.
+The GUI applies the saved choice immediately unless `RUST_LOG` overrides it;
+other processes load it at launch. On Windows the settings file is in the
+account's default Roaming AppData `aevan` directory. The Unix root daemon does
+not read an invoking user's file: set the same key in the administrator-owned
+`/Library/Application Support/Aevan/settings.toml` on macOS or
+`/etc/aevan/settings.toml` on Linux, then restart the daemon. It also ignores
+the invoking user's home and state-directory environment for logging.
+
+For a single run, `RUST_LOG=debug aevan status` works in a POSIX shell, or set
+`$env:RUST_LOG = 'debug'` before running the command in PowerShell and remove it
+afterward with `Remove-Item Env:RUST_LOG`. `aevan --verbose` raises the CLI's
+verbosity for one run when `RUST_LOG` is unset.
+
+---
+
 ## Windows MSI (recommended, per machine)
 
 Requirements: Windows 10/11 x64 and Administrator. The MSI installs to
@@ -273,6 +309,9 @@ links are stale and offers the one-line fix: run **Install command-line tools**
 again. The installer refuses to overwrite a real file or a symlink that is not
 one of Aevan's own links.
 
+Run `aevan` without a subcommand to open the GUI. When invoked through one of
+these symlinks, the launcher locates its companion binaries in the app bundle.
+
 The `.pkg` below still installs `aevan` and `aevand` directly into
 `/usr/local/bin`; use it when you want a system package manager to own those
 files instead of the GUI-managed symlinks.
@@ -314,9 +353,8 @@ by design, because a manual drag cannot know whether they are still in use.
    rm -rf "$HOME/Library/Logs/Aevan"
    ```
 
-`daemon-start.log` lives in that log directory. It records only the command,
-exit status and stderr of an elevated daemon start, never a credential or the
-tunnel key block.
+`daemon-start.log` lives in that log directory and records the observed stages
+and results by attempt ID. The GUI quotes only the current attempt.
 
 The Homebrew cask's `zap` stanza does the same cleanup. If Aevan was installed
 with `brew install --cask`, run:

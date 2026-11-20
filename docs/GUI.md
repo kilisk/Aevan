@@ -263,11 +263,14 @@ notification is shown for a plain `disconnected` transition or for repeated
   Items & Extensions. The Settings sheet also offers **Open Login Items &
   Extensions** and **Unregister daemon**. It then retries `status` and clears
   the banner on success.
-* Every elevated or prompted daemon start appends to
+* Every macOS start attempt appends its observed stages to
   `$HOME/Library/Logs/Aevan/daemon-start.log` (directory 0700, file 0600):
-  timestamp, the exact command, exit status and stderr. The log never contains
-  credentials or the tunnel key block. If a start fails, the banner quotes the
-  last three lines so the failure names itself. Every banner and error block
+  timestamp, attempt ID, operation and result. A verified ad-hoc bundle uses
+  the legacy path before asking ServiceManagement for status. A `NotFound`
+  status is reported as a ServiceManagement result; it does not prove that the
+  verified file is missing. If a start fails, the banner quotes up to three
+  lines from that attempt only. If none were written, it says so. The full log
+  remains on disk. Every banner and error block
   has a **Copy** button that puts the displayed text, including that log tail,
   on the clipboard through the toolkit API and briefly shows **Copied**. If the
   prompt is cancelled the message stays and the button can be pressed again; it
@@ -327,8 +330,19 @@ the selected profile asks for.
   is refused with the path named; the existing file is left untouched. If the
   app bundle is moved, the next launch reports that the links are stale and the
   same Install action repairs them.
-* Log level (displayed and cycled in memory; the GUI does not stream logs yet).
-* Daemon endpoint (named pipe on Windows, Unix socket elsewhere).
+* **Logging → Log level:** choose `error`, `warn`, `info` (default), `debug`, or
+  `trace`. The change applies to the running GUI and is saved for the next
+  launch of any Aevan binary under the same account. A valid `RUST_LOG` takes
+  precedence for that run. A Unix daemon running as root uses its own
+  administrator-owned setting; see [Installing Aevan](INSTALL.md#application-logs).
+* **Open log folder** opens the GUI's application log directory in the file
+  manager. On macOS it also contains the full `daemon-start.log`.
+* **About** shows the product, GUI version, build date and commit (when
+  available), the version reported by the running daemon, the responding
+  control endpoint, and the GUI config and log directories. **Copy diagnostics**
+  copies these fields and up to 50 recent `aevan-gui.log` lines, including
+  rotated lines if needed. Review the clipboard before sharing: paths and
+  network addresses may be present; credentials and raw auth data are not logged.
 
 ## State machine
 
@@ -465,8 +479,8 @@ every build host; the Windows task path keeps its existing `schtasks` tests.
   `aevan-gui` never does.
 * No profile secrets: adding, editing and deleting touch only the non-secret
   profile store (`profiles.toml`), never a password, token or TOTP secret.
-* No log streaming. The GUI only reads the tail of its own owner-only
-  `daemon-start.log` to name a failed daemon start.
+* No live log streaming. Use **Open log folder**, **Copy diagnostics**, or the
+  CLI's `aevan logs --follow` for the daemon's live stream.
 * No tray on Linux (see above). macOS has a menu-bar item and delivers
   notifications through UserNotifications.
 * No password persistence; a TOTP secret is stored only in the owner-only
@@ -490,8 +504,6 @@ every build host; the Windows task path keeps its existing `schtasks` tests.
 * **One tunnel:** like the daemon, the GUI shows one profile/tunnel at a time.
 * **Route detail:** the connected view shows the applied route count because the
   control `status` document exposes a count, not the route list.
-* **Log level:** shown and cycled in memory, but not yet sent anywhere; there is
-  no log viewer in M4.
 * **Rendering:** `iced` 0.14 with the `wgpu` 27 renderer. A machine without a
   working GPU/software adapter is out of scope for this milestone.
 
@@ -527,7 +539,7 @@ network or elevation:
   LaunchDaemon exactly once when ServiceManagement refuses an unsigned build;
 * clipboard text equals the displayed banner, including the daemon-start log
   tail, and the brief Copied confirmation is generation-safe;
-* the daemon-start log records timestamp, command, exit status and stderr,
+* the daemon-start log tags lines by attempt and excludes earlier attempts from the banner,
   tails correctly, and stays owner-only on Unix;
 * a stale Unix socket is removed so the next process becomes primary, a live
   socket makes the second process send `show`, and dropping the listener
