@@ -3,8 +3,9 @@
 //! The device is opened with `O_RDWR | O_CLOEXEC` and attached to a TUN
 //! interface with `TUNSETIFF`. The requested name is `aevan%d`, so the kernel
 //! assigns the unit (for example `aevan0`); the assigned name is read back from
-//! the same `ifreq`. `IFF_TUN | IFF_NO_PI` selects a layer-3 device without the
-//! 4-byte packet-information prefix, so reads and writes are raw IP packets.
+//! the same `ifreq`. Bring that interface up before the route applier runs.
+//! `IFF_TUN | IFF_NO_PI` selects a layer-3 device without the 4-byte
+//! packet-information prefix, so reads and writes are raw IP packets.
 //!
 //! The descriptor is deliberately left blocking: a dedicated reader thread
 //! (`crate::platform::reader`) owns the read side with a blocking `read`, and
@@ -86,8 +87,8 @@ fn missing_device() -> TunError {
     )
 }
 
-/// Open `/dev/net/tun`, attach a TUN interface and return the descriptor and
-/// the kernel-assigned name.
+/// Open `/dev/net/tun`, attach and bring up a TUN interface, then return the
+/// descriptor and the kernel-assigned name.
 fn open_tun() -> Result<(c_int, String), TunError> {
     if !Path::new(DEV_NET_TUN).exists() {
         return Err(missing_device());
@@ -101,7 +102,24 @@ fn open_tun() -> Result<(c_int, String), TunError> {
         return Err(last_error("opening /dev/net/tun"));
     }
 
-    match attach(fd) {
+    let initialise = || {
+        let name = attach(fd)?;
+        // TUNSETIFF creates the link down. Linux rejects routes through a
+        // down interface even after its address and MTU are configured.
+        crate::apply::run_checked(
+            &mut RealCommandRunner,
+            "ip",
+            &[
+                "link".into(),
+                "set".into(),
+                "dev".into(),
+                name.clone(),
+                "up".into(),
+            ],
+        )?;
+        Ok(name)
+    };
+    match initialise() {
         Ok(name) => Ok((fd, name)),
         Err(error) => {
             // SAFETY: `fd` was opened above and is not used again.

@@ -3,7 +3,8 @@
 //! This is the device proof that CI runs under `sudo` on Ubuntu and macOS:
 //! opening a `utun` or `/dev/net/tun` interface is the part that cannot be
 //! exercised by offline unit tests. Success means the kernel created the
-//! interface; no packet is sent and nothing on the host's network is changed.
+//! interface. Run `--linux-route` in a disposable network namespace to also
+//! exercise address, MTU, route setup and teardown without sending packets.
 //!
 //! Exit codes:
 //!
@@ -43,6 +44,45 @@ fn open_and_close(config: DeviceConfig) -> Result<(String, Option<isize>), TunEr
     let handle = device.wait_handle();
     device.close()?;
     Ok((name, handle))
+}
+
+#[cfg(target_os = "linux")]
+fn linux_route_smoke() -> Result<(), TunError> {
+    use std::net::Ipv4Addr;
+    use std::process::Command;
+
+    let destination = Ipv4Addr::new(198, 51, 100, 0);
+    let mut device = SmokeDevice::open(config())?;
+    device.set_addr(Ipv4Addr::new(192, 0, 2, 1).into(), 32)?;
+    device.set_mtu(1396)?;
+    device.set_routes(&[aevan_tun::Route::on_link(destination.into(), 24)?])?;
+    let cidr = format!("{destination}/24");
+    let lookup = || -> Result<String, TunError> {
+        let output = Command::new("ip")
+            .args(["-4", "route", "show", "exact", &cidr])
+            .output()?;
+        if !output.status.success() {
+            return Err(TunError::Io(std::io::Error::other(format!(
+                "route lookup failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ))));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    };
+    let expected = format!("{cidr} dev {}", device.name());
+    if !lookup()?.starts_with(&expected) {
+        return Err(TunError::Io(std::io::Error::other(format!(
+            "route did not use the kernel-assigned TUN interface: expected {expected}"
+        ))));
+    }
+    device.close()?;
+    if !lookup()?.trim().is_empty() {
+        return Err(TunError::Io(std::io::Error::other(
+            "route survived TUN teardown",
+        )));
+    }
+    println!("tun_smoke: Linux address, MTU, route apply and teardown passed");
+    Ok(())
 }
 
 fn skip_allowed() -> bool {
@@ -85,6 +125,14 @@ fn report(error: TunError) -> ExitCode {
 }
 
 fn main() -> ExitCode {
+    #[cfg(target_os = "linux")]
+    if std::env::args().any(|arg| arg == "--linux-route") {
+        return match linux_route_smoke() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => report(error),
+        };
+    }
+
     let config = config();
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]

@@ -114,7 +114,7 @@ jobs:
           fi
           ls -l /dev/net/tun || true
 
-      - name: TUN smoke (Linux)
+      - name: TUN and route lifecycle smoke (Linux)
         if: runner.os == 'Linux'
         run: |
           set -euo pipefail
@@ -129,7 +129,7 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          sudo env -u AEVAN_TUN_SMOKE_ALLOW_SKIP ./target/debug/examples/tun_smoke
+          sudo env -u AEVAN_TUN_SMOKE_ALLOW_SKIP unshare --net -- ./target/debug/examples/tun_smoke --linux-route
 
       - name: TUN smoke (macOS)
         if: runner.os == 'macOS'
