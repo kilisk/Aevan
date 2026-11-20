@@ -391,7 +391,7 @@ jobs:
           done
           systemctl is-active --quiet aevand.service
           aevan status --json | tee /tmp/aevan-deb-status.json
-          jq -e '.endpoint == "/run/aevan/aevan.sock" and .state == "disconnected"' /tmp/aevan-deb-status.json
+          jq -e '.ok and .endpoint == "/run/aevan/aevan.sock" and .status.state == "disconnected"' /tmp/aevan-deb-status.json
           sudo apt-get remove -y aevan
           if systemctl is-active --quiet aevand.service; then
             echo "package removal did not stop aevand"
