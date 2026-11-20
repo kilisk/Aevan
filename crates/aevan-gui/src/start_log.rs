@@ -15,8 +15,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Path of the log relative to `$HOME` on macOS.
-pub const RELATIVE_PATH: &str = "Library/Logs/Aevan/daemon-start.log";
+/// File name within the application log directory.
+const FILE_NAME: &str = "daemon-start.log";
 
 /// Number of trailing lines shown in the failure banner.
 pub const BANNER_LINES: usize = 3;
@@ -29,8 +29,7 @@ pub fn default_path() -> Option<PathBuf> {
     if !cfg!(target_os = "macos") {
         return None;
     }
-    let home = std::env::var_os("HOME")?;
-    Some(PathBuf::from(home).join(RELATIVE_PATH))
+    Some(aevan_core::logging::log_dir()?.join(FILE_NAME))
 }
 
 /// One entry to append.
@@ -55,8 +54,7 @@ pub struct Entry<'a> {
 /// diagnostic could not be written.
 pub fn append(path: &Path, entry: &Entry<'_>) -> io::Result<()> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-        set_mode(parent, 0o700)?;
+        aevan_core::logging::prepare_directory(parent)?;
     }
 
     let mut options = OpenOptions::new();

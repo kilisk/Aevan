@@ -15,6 +15,9 @@ pub const PROFILES_FILE: &str = "profiles.toml";
 /// File name of the owner-only secret store used on macOS and Linux.
 pub const SECRETS_FILE: &str = "secrets.json";
 
+/// File name of the non-secret settings file (currently the log level).
+pub const SETTINGS_FILE: &str = "settings.toml";
+
 /// Directory used for per-user configuration.
 pub fn config_dir() -> AevanResult<PathBuf> {
     if let Some(dir) = std::env::var_os("AEVAN_CONFIG_DIR") {
@@ -75,6 +78,11 @@ pub fn default_secrets_path() -> AevanResult<PathBuf> {
     Ok(config_dir()?.join(SECRETS_FILE))
 }
 
+/// Full path of the non-secret settings file (`<config_dir>/settings.toml`).
+pub fn default_settings_path() -> AevanResult<PathBuf> {
+    Ok(config_dir()?.join(SETTINGS_FILE))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -88,6 +96,14 @@ mod tests {
                 // the error must be the typed configuration error, not a panic.
                 assert!(matches!(error, AevanError::Config(_)));
             }
+        }
+    }
+
+    #[test]
+    fn settings_path_ends_with_the_expected_file() {
+        match default_settings_path() {
+            Ok(path) => assert!(path.ends_with(SETTINGS_FILE)),
+            Err(error) => assert!(matches!(error, AevanError::Config(_))),
         }
     }
 

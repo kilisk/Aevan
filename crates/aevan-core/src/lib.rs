@@ -11,6 +11,7 @@
 
 pub mod capabilities;
 pub mod error;
+pub mod logging;
 pub mod paths;
 pub mod profile;
 pub mod redact;
@@ -19,6 +20,7 @@ pub mod timezone;
 
 pub use capabilities::{Capability, Platform, CAPABILITIES};
 pub use error::{exit_code, AevanError, AevanResult};
+pub use logging::LogLevel;
 pub use paths::{default_config_path, default_profiles_path};
 pub use profile::{Profile, ProfileStore, RealmSource, SplitTunnelIntent};
 pub use state::State;

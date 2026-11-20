@@ -25,7 +25,10 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use serde::Serialize;
 
-use aevan_core::{exit_code, AevanError, AevanResult};
+use aevan_core::{exit_code, logging, AevanError, AevanResult};
+
+const BUILD_DATE: &str = env!("AEVAN_BUILD_DATE");
+const BUILD_COMMIT: &str = env!("AEVAN_BUILD_COMMIT");
 
 #[derive(Debug, Parser)]
 #[command(
@@ -189,12 +192,14 @@ struct ErrorReport<'a> {
 }
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
-    init_tracing(cli.verbose);
+    let parsed = Cli::try_parse();
+    init_tracing(parsed.as_ref().is_ok_and(|cli| cli.verbose));
+    let cli = parsed.unwrap_or_else(|error| error.exit());
 
     match run(&cli) {
         Ok(()) => ExitCode::from(exit_code::OK as u8),
         Err(error) => {
+            tracing::error!(exit_code = error.exit_code(), "CLI command failed");
             if cli.json {
                 let report = ErrorReport {
                     schema_version: doctor::SCHEMA_VERSION,
@@ -280,12 +285,6 @@ fn run(cli: &Cli) -> AevanResult<()> {
 }
 
 fn init_tracing(verbose: bool) {
-    use tracing_subscriber::EnvFilter;
-
-    let default = if verbose { "debug" } else { "info" };
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default));
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_writer(std::io::stderr)
-        .try_init();
+    logging::init("aevan", verbose);
+    logging::log_startup("aevan", env!("CARGO_PKG_VERSION"), BUILD_DATE, BUILD_COMMIT);
 }

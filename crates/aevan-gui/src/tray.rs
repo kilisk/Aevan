@@ -141,7 +141,7 @@ mod channel {
         } else {
             "an unknown panic".to_owned()
         };
-        tracing::error!(%detail, "a tray callback panicked");
+        tracing::error!("a tray callback panicked");
         let _ = events().send(TrayEvent::InternalPanic(detail));
     }
 

@@ -25,6 +25,11 @@ pub const SENSITIVE_KEY_FRAGMENTS: &[&str] = &[
     "authorization",
     "secret",
     "credential",
+    "request_body",
+    "response_body",
+    "key_block",
+    "private_key",
+    "session_id",
 ];
 
 /// Whether a key (header name, TOML key, JSON field, ...) names a secret.

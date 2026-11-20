@@ -27,6 +27,7 @@ mod macos_bundle;
 #[cfg(target_os = "macos")]
 mod macos_service;
 mod notifications;
+mod open_folder;
 // The service decision and its owner-only start log are compiled and tested
 // everywhere; only the macOS daemon path calls them in the application.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -38,9 +39,12 @@ mod view_model;
 
 use std::process::ExitCode;
 
-use aevan_core::ProfileStore;
+use aevan_core::{logging, ProfileStore};
 
 use crate::view_model::ViewModel;
+
+pub(crate) const BUILD_DATE: &str = env!("AEVAN_BUILD_DATE");
+pub(crate) const BUILD_COMMIT: &str = env!("AEVAN_BUILD_COMMIT");
 
 const HELP: &str = "\
 aevan-gui — native client for the aevand daemon
@@ -115,18 +119,18 @@ fn main() -> ExitCode {
     }
 }
 
-/// Send `tracing` events (including the Quit-anyway warning) to stderr.
+/// Write one log per process and mirror it to the platform developer log.
 ///
-/// A packaged macOS app may have no visible stderr, but a terminal launch and
-/// the system log still receive the line; `RUST_LOG` can raise or lower it.
+/// A packaged macOS app has no visible stderr, so Console.app receives the same
+/// records. `RUST_LOG` overrides the persisted level for this run.
 fn init_tracing() {
-    use tracing_subscriber::EnvFilter;
-
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_writer(std::io::stderr)
-        .try_init();
+    logging::init("aevan-gui", false);
+    logging::log_startup(
+        "aevan-gui",
+        env!("CARGO_PKG_VERSION"),
+        BUILD_DATE,
+        BUILD_COMMIT,
+    );
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -191,6 +195,7 @@ fn headless(json: bool) -> ExitCode {
     };
 
     let mut vm = ViewModel::new(&store, daemon_bridge::endpoint(), now);
+    vm.log_level = logging::configured_level();
     if let Some(profile) = vm.selected.clone() {
         match daemon_bridge::totp_secret(&profile) {
             Ok(secret) => vm.set_totp_secret(&profile, secret),

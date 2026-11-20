@@ -8,12 +8,12 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use tracing_subscriber::filter::LevelFilter;
-use tracing_subscriber::prelude::*;
-
-use aevan_core::{AevanError, AevanResult};
+use aevan_core::{logging, AevanError, AevanResult};
 use aevan_daemon::autostart::{self, TaskState};
 use aevan_daemon::{build_runtime, journal, server, Daemon, LogHub, LogLayer, RecoveryReport};
+
+const BUILD_DATE: &str = env!("AEVAN_BUILD_DATE");
+const BUILD_COMMIT: &str = env!("AEVAN_BUILD_COMMIT");
 
 const HELP: &str = "\
 aevand — the aevan daemon
@@ -86,6 +86,14 @@ where
 }
 
 fn main() -> ExitCode {
+    let logs = LogHub::new();
+    logging::init_with("aevand", false, LogLayer::new(logs.clone()));
+    logging::log_startup(
+        "aevand",
+        env!("CARGO_PKG_VERSION"),
+        BUILD_DATE,
+        BUILD_COMMIT,
+    );
     match parse_args(std::env::args().skip(1)) {
         Invocation::Help => {
             print!("{HELP}");
@@ -125,7 +133,7 @@ fn main() -> ExitCode {
             }
         }),
         Invocation::AutostartStatus => ExitCode::from(run_autostart_status()),
-        Invocation::Daemon => run_daemon(),
+        Invocation::Daemon => run_daemon(logs),
     }
 }
 
@@ -153,10 +161,7 @@ fn run_autostart_status() -> u8 {
     }
 }
 
-fn run_daemon() -> ExitCode {
-    let logs = LogHub::new();
-    init_tracing(logs.clone());
-
+fn run_daemon(logs: LogHub) -> ExitCode {
     match run(logs) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
@@ -169,24 +174,22 @@ fn run_daemon() -> ExitCode {
 
 /// Resolve the daemon's state directory.
 ///
-/// launchd starts system daemons with **no `HOME`**, so `config_dir()` fails there even though the
-/// process is root and perfectly able to write its own state. Fall back to root's real home in that
-/// case instead of exiting 1 before the socket is ever opened.
+/// A root daemon keeps state under root's actual home regardless of the
+/// environment inherited from the caller.
 fn state_dir() -> AevanResult<PathBuf> {
-    let error = match aevan_core::paths::config_dir() {
-        Ok(dir) => return Ok(dir),
-        Err(error) => error,
-    };
-    // Root, but no HOME to resolve: launchd does exactly this.
     #[cfg(target_os = "macos")]
     if server::process_is_root() {
-        return Ok(PathBuf::from("/var/root/Library/Application Support/aevan"));
+        let dir = PathBuf::from("/private/var/root/Library/Application Support/aevan");
+        logging::prepare_directory(&dir)?;
+        return Ok(dir);
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     if server::process_is_root() {
-        return Ok(PathBuf::from("/root/.config/aevan"));
+        let dir = PathBuf::from("/root/.config/aevan");
+        logging::prepare_directory(&dir)?;
+        return Ok(dir);
     }
-    Err(error)
+    aevan_core::paths::config_dir()
 }
 
 fn run_recover() -> u8 {
@@ -265,6 +268,7 @@ fn fatal_line(error: &AevanError) -> String {
 }
 
 fn run(logs: LogHub) -> AevanResult<()> {
+    tracing::info!(stage = "state directory", "daemon startup");
     let config_dir = state_dir()?;
     std::fs::create_dir_all(&config_dir)?;
     set_private_directory(&config_dir)?;
@@ -272,6 +276,7 @@ fn run(logs: LogHub) -> AevanResult<()> {
     let daemon = Arc::new(Daemon::new(&config_dir, logs));
     let path = journal::journal_path(&config_dir);
 
+    tracing::info!(stage = "journal recovery", journal = %path.display(), "daemon startup");
     match journal::recover(&path) {
         Ok(Some(report)) => {
             if report.is_complete() {
@@ -304,20 +309,10 @@ fn run(logs: LogHub) -> AevanResult<()> {
         }
     }
 
+    tracing::info!(stage = "runtime initialization", "daemon startup");
     let runtime = build_runtime().map_err(AevanError::Io)?;
-    tracing::info!(milestone = aevan_daemon::MILESTONE, "aevand starting");
+    tracing::info!(stage = "starting control server", endpoint = %server::endpoint_description(), "daemon startup");
     runtime.block_on(server::serve(daemon))
-}
-
-fn init_tracing(logs: LogHub) {
-    let _ = tracing_subscriber::registry()
-        .with(LogLayer::new(logs))
-        .with(
-            tracing_subscriber::fmt::layer()
-                .with_writer(std::io::stderr)
-                .with_filter(LevelFilter::INFO),
-        )
-        .try_init();
 }
 
 #[cfg(unix)]

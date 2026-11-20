@@ -3,12 +3,14 @@
 
 use iced::keyboard::key::Named;
 use iced::keyboard::{Key, Modifiers};
-use iced::widget::{button, column, container, row, scrollable, text, text_input, Space};
+use iced::widget::{
+    button, column, container, pick_list, row, scrollable, text, text_input, Space,
+};
 use iced::{
     window, Alignment, Background, Border, Color, Element, Length, Subscription, Task, Theme,
 };
 
-use aevan_core::ProfileStore;
+use aevan_core::{logging, ProfileStore};
 use aevan_daemon::client::ClientError;
 use aevan_daemon::StatusReport;
 
@@ -78,7 +80,8 @@ pub enum Message {
     RetryRecovery,
     RecoveryRetried(Result<StatusReport, ClientError>),
     ReloadProfiles,
-    CycleLogLevel,
+    LogLevelSelected(aevan_core::LogLevel),
+    OpenLogFolder,
     TotpInput(SecretField),
     TotpValidate,
     TotpSave,
@@ -151,6 +154,7 @@ pub struct App {
 pub fn run(store: ProfileStore) -> iced::Result {
     let endpoint = daemon_bridge::endpoint();
     let mut vm = ViewModel::new(&store, endpoint, now_unix());
+    vm.log_level = logging::configured_level();
     // The macOS daemon is a keepalive system LaunchDaemon: Quit leaves it and
     // any live tunnel alone, and Disconnect is the explicit stop action.
     vm.leave_daemon_on_quit = cfg!(target_os = "macos");
@@ -270,7 +274,7 @@ impl App {
     /// Record a caught panic as a visible banner instead of aborting.
     fn panic_banner(&mut self, context: &str, payload: Box<dyn std::any::Any + Send>) {
         let detail = panic_detail(payload);
-        tracing::error!(%detail, context, "the GUI caught a panic");
+        tracing::error!(context, "the GUI caught a panic");
         self.vm.notice = Some(format!(
             "Aevan recovered from an internal error in {context}: {detail}"
         ));
@@ -465,7 +469,17 @@ impl App {
                     Err(error) => self.vm.notice = Some(error.to_string()),
                 }
             }
-            Message::CycleLogLevel => self.vm.log_level = self.vm.log_level.next(),
+            Message::LogLevelSelected(level) => match logging::set_runtime_level(level) {
+                Ok(()) => self.vm.log_level = level,
+                Err(error) => {
+                    self.vm.notice = Some(format!("could not save the log level: {error}"))
+                }
+            },
+            Message::OpenLogFolder => {
+                if let Err(message) = crate::open_folder::open_log_folder() {
+                    self.vm.notice = Some(message);
+                }
+            }
             Message::TotpInput(value) => self.vm.set_totp_input(value.into_string()),
             Message::TotpValidate => {
                 if let Err(message) = self.vm.validate_totp_input() {
@@ -1296,18 +1310,37 @@ impl App {
         };
 
         view = view
-            .push(detail_row("Log level", self.vm.log_level.as_str()))
+            .push(text("Logging").size(17))
             .push(
-                button(
-                    text(format!(
-                        "Cycle log level (now {})",
-                        self.vm.log_level.as_str()
-                    ))
-                    .size(14),
-                )
-                .on_press(Message::CycleLogLevel)
-                .style(button::secondary)
-                .padding([6, 14]),
+                row![
+                    text("Log level")
+                        .size(13)
+                        .color(MUTED)
+                        .width(Length::Fixed(130.0)),
+                    pick_list(
+                        aevan_core::LogLevel::ALL,
+                        Some(self.vm.log_level),
+                        Message::LogLevelSelected,
+                    )
+                    .text_size(14),
+                ]
+                .spacing(10)
+                .align_y(Alignment::Center),
+            )
+            .push(
+                text(if logging::has_env_override() {
+                    "RUST_LOG is active. This setting will apply on the next run without the override."
+                } else {
+                    "Applies to this GUI immediately and is saved for future runs under this account."
+                })
+                .size(12)
+                .color(MUTED),
+            )
+            .push(
+                button(text("Open log folder").size(14))
+                    .on_press(Message::OpenLogFolder)
+                    .style(button::secondary)
+                    .padding([6, 14]),
             );
         view = view.push(detail_row("Start at login", &self.vm.autostart.label()));
         if let Some(enabled) = self.vm.autostart.toggle_target() {

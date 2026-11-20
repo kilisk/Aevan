@@ -45,7 +45,11 @@ impl Daemon {
     /// fallback only. A root daemon usually has no profiles there and must
     /// still start and serve version-2 requests.
     pub fn new(config_dir: &Path, logs: LogHub) -> Self {
-        Self::with_profile_store_path(config_dir, logs, ProfileStore::default_path().ok())
+        Self::with_profile_store_path(
+            config_dir,
+            logs,
+            Some(config_dir.join(aevan_core::paths::PROFILES_FILE)),
+        )
     }
 
     /// Build a daemon with an explicit profile-store path.

@@ -267,12 +267,16 @@ pub fn connect_session<C: TunnelControl>(
     // Everything that touches the interface, and the journal that undoes it,
     // must use the name the OS actually gave us.
     let interface = resolve_interface(device.name(), &plan.device);
+    let device_fd = device.wait_handle();
     if interface != plan.device {
         tracing::info!(
             configured = %plan.device,
             assigned = %interface,
+            fd = ?device_fd,
             "the OS assigned a different tunnel interface name"
         );
+    } else {
+        tracing::info!(assigned = %interface, fd = ?device_fd, "tunnel interface assigned");
     }
 
     // Create the journal before the first change, under the assigned name.
@@ -297,6 +301,11 @@ pub fn connect_session<C: TunnelControl>(
 
     let mut transport = UdpEspTransport::connect(peer, esp.udp_port)
         .map_err(|error| AevanError::Network(format!("ESP UDP socket: {error}")))?;
+    tracing::info!(
+        local = ?transport.local_addr().ok(),
+        remote = ?transport.peer_addr().ok(),
+        "ESP UDP socket connected"
+    );
     // Ask for large socket buffers so a burst does not overflow the kernel
     // queue. A refusal is harmless and intentionally ignored.
     if let Some(handle) = transport.wait_handle() {

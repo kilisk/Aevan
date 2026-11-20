@@ -6,11 +6,9 @@
 //! subscriber.
 
 use std::collections::VecDeque;
-use std::fmt;
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::broadcast;
-use tracing::field::{Field, Visit};
 use tracing::{Event, Subscriber};
 use tracing_subscriber::layer::Context;
 use tracing_subscriber::Layer;
@@ -173,71 +171,13 @@ impl LogLayer {
 impl<S: Subscriber> Layer<S> for LogLayer {
     fn on_event(&self, event: &Event<'_>, _context: Context<'_, S>) {
         let metadata = event.metadata();
-        let mut visitor = Visitor::default();
-        event.record(&mut visitor);
-        self.hub.record(
-            Level::from_tracing(metadata.level()),
-            metadata.target(),
-            visitor.render(),
-        );
-    }
-}
-
-#[derive(Default)]
-struct Visitor {
-    message: String,
-    fields: Vec<(String, String)>,
-}
-
-impl Visitor {
-    fn push(&mut self, name: &str, value: String) {
-        if name == "message" {
-            self.message = value;
-        } else if aevan_core::redact::is_sensitive_key(name) {
-            self.fields
-                .push((name.to_owned(), aevan_core::redact::REDACTED.to_owned()));
-        } else {
-            self.fields.push((name.to_owned(), value));
+        if let Some(message) = aevan_core::logging::diagnostic_event(event) {
+            self.hub.record(
+                Level::from_tracing(metadata.level()),
+                metadata.target(),
+                message,
+            );
         }
-    }
-
-    fn render(&self) -> String {
-        if self.fields.is_empty() {
-            return self.message.clone();
-        }
-        let fields = self
-            .fields
-            .iter()
-            .map(|(name, value)| format!("{name}={value}"))
-            .collect::<Vec<_>>()
-            .join(" ");
-        if self.message.is_empty() {
-            fields
-        } else {
-            format!("{} {fields}", self.message)
-        }
-    }
-}
-
-impl Visit for Visitor {
-    fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
-        self.push(field.name(), format!("{value:?}"));
-    }
-
-    fn record_str(&mut self, field: &Field, value: &str) {
-        self.push(field.name(), value.to_owned());
-    }
-
-    fn record_i64(&mut self, field: &Field, value: i64) {
-        self.push(field.name(), value.to_string());
-    }
-
-    fn record_u64(&mut self, field: &Field, value: u64) {
-        self.push(field.name(), value.to_string());
-    }
-
-    fn record_bool(&mut self, field: &Field, value: bool) {
-        self.push(field.name(), value.to_string());
     }
 }
 

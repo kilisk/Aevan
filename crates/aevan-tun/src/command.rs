@@ -67,10 +67,12 @@ pub struct RealCommandRunner;
 
 impl CommandRunner for RealCommandRunner {
     fn run(&mut self, program: &str, args: &[&str]) -> Result<Output, TunError> {
-        Command::new(program)
+        let output = Command::new(program)
             .args(args)
             .output()
-            .map_err(TunError::Io)
+            .map_err(TunError::Io)?;
+        log_command(program, args, &output);
+        Ok(output)
     }
 
     fn run_with_input(
@@ -92,8 +94,25 @@ impl CommandRunner for RealCommandRunner {
         if let Some(mut stdin) = child.stdin.take() {
             stdin.write_all(input).map_err(TunError::Io)?;
         }
-        child.wait_with_output().map_err(TunError::Io)
+        let output = child.wait_with_output().map_err(TunError::Io)?;
+        log_command(program, args, &output);
+        Ok(output)
     }
+}
+
+/// Record every platform command and its exit status.
+///
+/// The connect path uses this to show exactly which route or DNS command ran
+/// and whether it succeeded. Arguments never contain credentials.
+fn log_command(program: &str, args: &[&str], output: &Output) {
+    let exit_status = output.status.code();
+    tracing::info!(
+        program,
+        args = ?args,
+        exit_status = ?exit_status,
+        success = output.status.success(),
+        "platform command finished"
+    );
 }
 
 #[derive(Debug, Clone)]

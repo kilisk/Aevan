@@ -59,9 +59,14 @@ dependencies = [
 name = "aevan-core"
 version = "0.2.16"
 dependencies = [
+ "libc",
+ "oslog",
  "serde",
  "thiserror 2.0.21",
  "toml 0.8.2",
+ "tracing",
+ "tracing-subscriber",
+ "windows-sys 0.61.2",
  "zeroize",
 ]
 
@@ -3272,6 +3277,15 @@ checksum = "9aa2b01e1d916879f73a53d01d1d6cee68adbb31d6d9177a8cfce093cced1d50"
 dependencies = [
  "futures-core",
  "pin-project-lite",
+]
+
+[[package]]
+name = "oslog"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "80d2043d1f61d77cb2f4b1f7b7b2295f40507f5f8e9d1c8bf10a1ca5f97a3969"
+dependencies = [
+ "cc",
 ]
 
 [[package]]

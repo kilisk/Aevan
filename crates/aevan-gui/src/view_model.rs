@@ -19,6 +19,8 @@ use serde::Serialize;
 use zeroize::Zeroizing;
 
 use aevan_core::{Profile, ProfileStore, SplitTunnelIntent};
+
+pub use aevan_core::LogLevel;
 use aevan_daemon::autostart::TaskState;
 use aevan_daemon::client::ClientError;
 use aevan_daemon::{RecoveryReport, Request, SecretString, StatusReport};
@@ -559,56 +561,6 @@ pub fn validate_profile_draft_excluding<'a>(
     errors
 }
 
-/// One of the logging levels accepted by the daemon.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LogLevel {
-    /// Errors only.
-    Error,
-    /// Warnings and above.
-    Warn,
-    /// Informational and above (default).
-    Info,
-    /// Debug and above.
-    Debug,
-    /// Everything, including trace.
-    Trace,
-}
-
-impl LogLevel {
-    /// The protocol spelling.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Error => "error",
-            Self::Warn => "warn",
-            Self::Info => "info",
-            Self::Debug => "debug",
-            Self::Trace => "trace",
-        }
-    }
-
-    /// The next level in display order, wrapping around.
-    pub fn next(self) -> Self {
-        match self {
-            Self::Error => Self::Warn,
-            Self::Warn => Self::Info,
-            Self::Info => Self::Debug,
-            Self::Debug => Self::Trace,
-            Self::Trace => Self::Error,
-        }
-    }
-
-    /// Parse a protocol spelling, falling back to `info`.
-    pub fn parse(value: &str) -> Self {
-        match value {
-            "error" => Self::Error,
-            "warn" => Self::Warn,
-            "debug" => Self::Debug,
-            "trace" => Self::Trace,
-            _ => Self::Info,
-        }
-    }
-}
-
 /// Credentials prepared for exactly one `connect` request.
 ///
 /// The type is deliberately not `Clone` and has a redacted `Debug`. It is
@@ -849,7 +801,7 @@ impl ViewModel {
             token: Zeroizing::new(String::new()),
             totp_secret: None,
             now_unix,
-            log_level: LogLevel::parse("info"),
+            log_level: LogLevel::default(),
             endpoint,
             notice: None,
             copied_text: None,

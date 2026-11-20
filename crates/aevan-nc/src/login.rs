@@ -296,10 +296,7 @@ impl LoginRequest {
         client: &mut HttpClient<T>,
     ) -> Result<LoginSubmission, ProtoError> {
         let body = self.body();
-        tracing::debug!(
-            path = %self.action.path_and_query.split('?').next().unwrap_or("/"),
-            "submitting login form"
-        );
+        tracing::debug!("submitting login form");
         let response = client.post(&self.action, FORM_CONTENT_TYPE, body.as_bytes())?;
         let outcome = LoginOutcome::classify(&response, &self.action);
         Ok(LoginSubmission {
@@ -401,10 +398,7 @@ impl TokenRequest {
         client: &mut HttpClient<T>,
     ) -> Result<LoginSubmission, ProtoError> {
         let body = self.body();
-        tracing::debug!(
-            path = %self.action.path_and_query.split('?').next().unwrap_or("/"),
-            "submitting token form"
-        );
+        tracing::debug!("submitting token form");
         let response = client.post(&self.action, FORM_CONTENT_TYPE, body.as_bytes())?;
         let outcome = LoginOutcome::classify(&response, &self.action);
         let mut request_field_names: Vec<String> =
@@ -545,10 +539,7 @@ impl ContinuationRequest {
         client: &mut HttpClient<T>,
     ) -> Result<LoginSubmission, ProtoError> {
         let body = self.body();
-        tracing::debug!(
-            path = %self.action.path_and_query.split('?').next().unwrap_or("/"),
-            "submitting user-confirm continuation form"
-        );
+        tracing::debug!("submitting user-confirm continuation form");
         let response = client.post(&self.action, FORM_CONTENT_TYPE, body.as_bytes())?;
         let outcome = LoginOutcome::classify(&response, &self.action);
         Ok(LoginSubmission {
