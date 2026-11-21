@@ -58,11 +58,11 @@ protocol is described in [docs/PROTOCOL.md](docs/PROTOCOL.md).
 
 | Platform | Install | Status |
 |---|---|---|
-| **Windows 10/11** | `aevan-<version>-x64.msi` (Administrator) or portable `.zip` | Complete and live-verified: login, oNCP handshake, ESP tunnel, daemon, tray GUI, installers |
-| **macOS** | `aevan-<version>-arm64+x86_64.dmg` (drag to Applications), the `.pkg` for the CLI/system install, or the Homebrew cask | The `utun` device backend is implemented and requires root (`sudo`). It builds, installs, runs the CLI, daemon and GUI, and the full route/MTU/DNS appliers exist. CI opens a real `utun` device under `sudo` with `crates/aevan-tun/examples/tun_smoke.rs`; **a full live tunnel still needs a human on macOS hardware.** |
-| **Linux** | tarball + `install.sh`, `.deb` or `.rpm` | The `/dev/net/tun` device backend is implemented and requires root or `CAP_NET_ADMIN`. Packaging (tarball, `.deb`, `.rpm`) exists, and CI opens a real TUN device under `sudo` with the same smoke example. **A full live tunnel still needs a human on Linux hardware.** |
+| **Windows 10/11** | `aevan-<version>-x64.msi` (Administrator) or portable `.zip` | Earlier builds verified live login, ESP transport, DNS and cleanup. v0.2.20 passed CI; no new live Windows gateway run was recorded for that release. |
+| **macOS** | Universal `.dmg` or `.pkg` | v0.2.20 CI validated the DMG, opened `utun`, checked nonblocking reads and reached the root daemon socket from a normal user. A successful live tunnel and interactive helper startup are not verified for this release. |
+| **Linux** | Ubuntu `.deb`, tarball + `install.sh`, or `.rpm` | v0.2.20 carried live ping, direct DNS and an authenticated SSH session on Ubuntu under WSL2. HTTPS reached TLS certificate validation. Native Ubuntu CI also tested the `.deb` and a local TUN route. Live non-WSL Linux and sustained traffic across rekey remain unverified. |
 
-The device layer is real on all three platforms. Only the Windows data plane has been exercised end to end; macOS and Linux device creation is live-verified in CI, but their full tunnel path (handshake, ESP traffic, apply, teardown) is still a human check.
+On the tested WSL2 setup, systemd-resolved received the VPN DNS settings but normal applications still used the WSL-managed DNS proxy. See [test evidence and open gaps](docs/STATUS.md#v0220-verification).
 
 The per-capability implementation and verification state is tracked in [docs/PLATFORM-MATRIX.md](docs/PLATFORM-MATRIX.md); a capability that is implemented on one OS and stubbed or absent on another must carry a gap entry in [docs/platform-gaps.toml](docs/platform-gaps.toml), and the CI `platform-matrix` job enforces it.
 

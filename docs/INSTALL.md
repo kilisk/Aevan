@@ -16,7 +16,7 @@ binaries in every package:
 | `aevan-gui` (`aevan-gui.exe`) | native GUI; a daemon client, never authenticates itself |
 | `wintun.dll` (Windows only) | signed WireGuard LLC L3 driver library used by `aevand` |
 
-Version 0.2.2 is the current build.
+See [release verification](STATUS.md#v0220-verification) for what was tested.
 
 ## Package matrix
 
@@ -38,10 +38,10 @@ open an ad-hoc-signed app and the `.pkg` are in the macOS sections below.
 
 ## Artifact status
 
-Every artifact is built by CI. The MSI, DMG, `.deb` and `.rpm` are also
-inspected there. **No artifact has been installed on a clean machine.** The
-`.deb` and `.rpm` are now built in CI, but they have never been installed by
-anyone; their CI checks are structural only.
+Release artifacts are built by CI. The MSI, DMG, `.deb` and `.rpm` are also
+inspected there. The `.deb` has a headless CI smoke test: install, start the
+systemd daemon, query status as a normal user and remove the package. Other
+artifacts do not have equivalent install coverage.
 
 | Artifact | Built in CI | Inspected in CI | Installed on a clean machine |
 | --- | --- | --- | --- |
@@ -50,7 +50,7 @@ anyone; their CI checks are structural only.
 | `aevan-<version>-arm64+x86_64.dmg` | yes | yes (mount, bundle, icon, binary and symlink assertions) | no |
 | `aevan-<version>-arm64+x86_64.pkg` | yes | no | no |
 | `aevan-<version>-x86_64-linux.tar.gz` | yes | no | no |
-| `aevan_<version>_amd64.deb` | yes | yes (`dpkg-deb`) | no |
+| `aevan_<version>_amd64.deb` | yes | yes (`dpkg-deb`) | yes (Ubuntu CI runner) |
 | `aevan-<version>-1.x86_64.rpm` | yes | yes (`rpm -qip/-qlp`) | no |
 | `Casks/aevan.rb` | not built | no | no |
 
@@ -601,9 +601,9 @@ Unless `--purge` is passed it keeps `~/.config/aevan` (your profiles).
 
 ## Debian / Ubuntu package
 
-Requirements: Debian or Ubuntu on amd64 and `sudo`. The `.deb` is built and
-inspected in CI with `dpkg-deb`, but it has **never been installed by anyone**;
-treat the steps below as unproven until you have run them on a clean machine.
+Requirements: Debian or Ubuntu on amd64 and `sudo`. The `.deb` was installed
+and removed on a headless Ubuntu CI runner. This verifies package and service
+startup, not live gateway access.
 
 ```sh
 sudo apt install ./aevan_<version>_amd64.deb
@@ -634,7 +634,7 @@ The package declares `Depends: libc6, hicolor-icon-theme, systemd`. Its
 sudo systemctl enable --now aevand.service
 ```
 
-`prerm` stops the unit only if it is already enabled. The unit runs `aevand` as
+`prerm` stops the unit if it is running. The unit runs `aevand` as
 `root` with `HOME=/root`, so its profile store is `/root/.config/aevan`.
 
 Remove the package with:

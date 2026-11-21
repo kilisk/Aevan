@@ -9,11 +9,11 @@ constraints that make each row non-trivial. Nothing below changes the contract.
 | macOS 13+ | `utun` via `socket(PF_SYSTEM)` | needs root or a privileged launchd helper. NetworkExtension/App Store "VPN" integration is out of scope (needs an Apple entitlement) | `networksetup` on the primary network service (`route -n get default` → `networksetup -listnetworkserviceorder`, first enabled service as fallback); previous servers and service name recorded and restored. Interface-wide only: the gateway pushes servers without search domains, so per-domain split DNS is not available | `route -n add` over the `utun` | Implemented. `platform::probe` reports the kernel `utun` control and whether root is held; `open` needs root and returns a typed `Permission` otherwise. Packets carry a 4-byte address-family header that the device strips/prepends |
 | Linux | `/dev/net/tun` | `CAP_NET_ADMIN` or a systemd service + polkit | manager-dependent, selected at apply time: `resolvectl dns/domain` (systemd-resolved), then `resolvconf`, then an `/etc/resolv.conf` backup fallback; the choice is journaled so revert uses the same mechanism | netlink via the `rtnetlink` crate | Implemented. `platform::probe` checks for `/dev/net/tun` and whether root is held; `open` needs root/`CAP_NET_ADMIN` and returns a typed `Permission` otherwise. `IFF_NO_PI` means raw IP packets |
 
-Device creation is proven by `crates/aevan-tun/examples/tun_smoke.rs`, which CI
-builds and runs under `sudo` on Ubuntu and macOS. It opens a device, prints the
-kernel-assigned name and wait handle, sends nothing, and closes. A full tunnel
-(handshake, ESP traffic, route/DNS application and teardown) on macOS and Linux
-still needs a human on real hardware; CI proves the device layer only.
+CI runs `crates/aevan-tun/examples/tun_smoke.rs` under `sudo` on Ubuntu and
+macOS. Ubuntu verifies local packet I/O and route setup/cleanup; macOS opens
+`utun` and verifies nonblocking reads. These checks do not contact a gateway.
+Live ESP traffic was verified on Ubuntu under WSL2, but has not been verified
+on non-WSL Linux or macOS. See [release verification](STATUS.md#v0220-verification).
 
 ## DNS per platform
 

@@ -22,8 +22,8 @@ tracking_note = "Tracked with the macOS live-tunnel verification in docs/STATUS.
 [[gap]]
 capability = "tun-device"
 platform = "linux"
-reason = "The /dev/net/tun device opens in CI's tun_smoke, but the full tunnel (handshake, ESP through the device, address/route/DNS apply and teardown) has not been run on Linux."
-tracking_note = "Tracked with the Linux live-tunnel verification in docs/STATUS.md."
+reason = "Live ESP traffic is verified on Ubuntu under WSL2. Native Ubuntu CI verifies the local TUN route lifecycle but does not connect to a gateway."
+tracking_note = "Verify a live non-WSL Linux session and sustained traffic across rekey; see docs/STATUS.md."
 
 [[gap]]
 capability = "dns-apply"
@@ -34,8 +34,8 @@ tracking_note = "Tracked with the macOS live-tunnel verification in docs/STATUS.
 [[gap]]
 capability = "dns-apply"
 platform = "linux"
-reason = "The systemd-resolved, resolvconf and /etc/resolv.conf fallback paths are unit-tested but have not been run in a live tunnel on Linux."
-tracking_note = "Tracked with the Linux live-tunnel verification in docs/STATUS.md."
+reason = "Live WSL2 testing verifies the systemd-resolved link settings, but WSL's generated resolver file routes ordinary application lookups to its host proxy instead. The other DNS backends are not verified in a live tunnel."
+tracking_note = "Verify normal application resolution and the other DNS backends; see docs/STATUS.md."
 
 [[gap]]
 capability = "notifications"

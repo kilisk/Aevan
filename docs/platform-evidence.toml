@@ -7,9 +7,8 @@
 #
 # `source` names the run: a CI job or a dated user report. The Windows tunnel
 # evidence is the live verification recorded in docs/CONNECT.md (2026-11-04).
-# The macOS and Linux tun-device entries record the CI smoke proof that the
-# device opens. That is a live device run; a full tunnel remains a gap, as
-# docs/platform-gaps.toml states.
+# macOS TUN evidence is a CI smoke, not a real gateway session. Linux entries
+# distinguish live WSL2 results from native Ubuntu CI smoke coverage.
 
 [[evidence]]
 capability = "tun-device"
@@ -21,13 +20,13 @@ source = "docs/CONNECT.md: live Windows tunnel verification (2026-11-04)"
 capability = "tun-device"
 platform = "macos"
 state = "verified-live"
-source = "CI job test (macos-latest): tun_smoke opens utun; no full tunnel run"
+source = "v0.2.20 CI run 44735038224: utun opens and empty read returns WouldBlock; no live gateway session verified"
 
 [[evidence]]
 capability = "tun-device"
 platform = "linux"
 state = "verified-live"
-source = "CI job test (ubuntu-latest): tun_smoke opens /dev/net/tun; no full tunnel run"
+source = "docs/STATUS.md: v0.2.20 live on Ubuntu under WSL2; Ubuntu CI also tested TUN packet I/O"
 
 [[evidence]]
 capability = "address-and-routes"
@@ -44,8 +43,8 @@ source = "not exercised; no live macOS tunnel evidence"
 [[evidence]]
 capability = "address-and-routes"
 platform = "linux"
-state = "compile-only"
-source = "not exercised; no live Linux tunnel evidence"
+state = "verified-live"
+source = "docs/STATUS.md: v0.2.20 assigned an address and four split routes on WSL2; ping, DNS and SSH exercised the routes"
 
 [[evidence]]
 capability = "dns-apply"
@@ -62,8 +61,8 @@ source = "not exercised; no live macOS tunnel evidence"
 [[evidence]]
 capability = "dns-apply"
 platform = "linux"
-state = "compile-only"
-source = "not exercised; no live Linux tunnel evidence"
+state = "verified-live"
+source = "docs/STATUS.md: v0.2.20 systemd-resolved link DNS on WSL2; ordinary WSL resolver still bypasses it"
 
 [[evidence]]
 capability = "daemon-autostart"
@@ -146,8 +145,8 @@ source = "CI job test (macos-latest): cross-UID socket check proves the root dae
 [[evidence]]
 capability = "daemon-registration"
 platform = "linux"
-state = "compile-only"
-source = "not exercised; no live Linux service registration run recorded"
+state = "verified-live"
+source = "v0.2.20 Ubuntu CI installed the systemd unit and started it explicitly; startup at boot not verified"
 
 [[evidence]]
 capability = "installer-artifact"
@@ -164,5 +163,5 @@ source = "built and validated in CI; not installed on a clean machine"
 [[evidence]]
 capability = "installer-artifact"
 platform = "linux"
-state = "compile-only"
-source = "built and inspected in CI; not installed on a clean machine"
+state = "verified-live"
+source = "v0.2.20 Ubuntu CI installed and removed the Debian package; RPM and tarball installation not verified by this test"
